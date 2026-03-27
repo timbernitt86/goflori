@@ -1,0 +1,295 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Projekt {{ project.name }} | Dashboard{% endblock %}
+
+{% block content %}
+<p><a href="{{ url_for('dashboard.projects') }}">Zurueck zur Projektliste</a></p>
+
+<div class="card">
+    <h2>Projekt: {{ project.name }}</h2>
+    <table>
+        <tbody>
+            <tr><th>ID</th><td>{{ project.id }}</td></tr>
+            <tr><th>Slug</th><td>{{ project.slug }}</td></tr>
+            <tr><th>Framework</th><td>{{ project.framework or '-' }}</td></tr>
+            <tr><th>Domain</th><td>{{ project.domain or '-' }}</td></tr>
+            <tr><th>Environment</th><td>{{ project.environment }}</td></tr>
+            <tr><th>Branch</th><td>{{ project.branch }}</td></tr>
+            <tr>
+                <th>Status</th>
+                <td>
+                    {% set project_status_class = 'status-' ~ project.status if project.status in ['pending', 'running', 'success', 'failed'] else 'status-unknown' %}
+                    <span class="badge {{ project_status_class }}">{{ project.status }}</span>
+                </td>
+            </tr>
+            <tr><th>Repository</th><td>{{ project.repository.url if project.repository else '-' }}</td></tr>
+            <tr><th>Erstellt</th><td>{{ project.created_at }}</td></tr>
+            <tr><th>Aktualisiert</th><td>{{ project.updated_at }}</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="card">
+    <h3>Infrastruktur</h3>
+    {% if latest_server %}
+        <table>
+            <tbody>
+                <tr><th>Servername</th><td>{{ latest_server.name }}</td></tr>
+                <tr><th>Provider</th><td>{{ latest_server.provider }}</td></tr>
+                <tr><th>Server-IP</th><td>{{ latest_server.ipv4 or '-' }}</td></tr>
+                <tr><th>Status</th><td>{{ latest_server.status }}</td></tr>
+            </tbody>
+        </table>
+    {% else %}
+        <p>Keine Serverdaten vorhanden.</p>
+    {% endif %}
+
+    <h4>Domain-Routing</h4>
+    <table>
+        <tbody>
+            <tr><th>Konfigurierte Domain</th><td>{{ project.domain or '-' }}</td></tr>
+            <tr><th>Ziel-IP</th><td>{{ domain_target_ip or '-' }}</td></tr>
+            <tr><th>Gewuenschter Server Type</th><td>{{ project.desired_server_type or '-' }}</td></tr>
+            <tr><th>Gewuenschte Location</th><td>{{ project.desired_location or '-' }}</td></tr>
+            <tr><th>Gewuenschtes Image</th><td>{{ project.desired_image or '-' }}</td></tr>
+            <tr><th>Effektiver Server Type</th><td>{{ effective_server_type or '-' }}</td></tr>
+            <tr><th>Effektive Location</th><td>{{ effective_location or '-' }}</td></tr>
+            <tr><th>Effektives Image</th><td>{{ effective_image or '-' }}</td></tr>
+        </tbody>
+    </table>
+
+    <h4>Zugeordnete Server</h4>
+    {% if project.servers %}
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Provider-ID</th>
+                    <th>IP</th>
+                    <th>Status</th>
+                    <th>Typ</th>
+                    <th>Location</th>
+                    <th>Aktion</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for server in project.servers|sort(attribute='created_at', reverse=true) %}
+                    <tr>
+                        <td>{{ server.id }}</td>
+                        <td>
+                            {{ server.name }}
+                            {% if project.active_server_id == server.id %}
+                                <span class="badge status-success">aktiv</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ server.provider_server_id or '-' }}</td>
+                        <td>{{ server.ipv4 or '-' }}</td>
+                        <td>{{ server.status }}</td>
+                        <td>{{ server.server_type }}</td>
+                        <td>{{ server.region }}</td>
+                        <td>
+                            {% if project.active_server_id == server.id %}
+                                <span class="badge status-success">Aktiv</span>
+                            {% else %}
+                                <form method="post" action="{{ url_for('dashboard.activate_project_server', project_id=project.id, server_id=server.id) }}">
+                                    <button type="submit" class="secondary">Aktiv setzen</button>
+                                </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>Diesem Projekt ist noch kein Server zugeordnet.</p>
+    {% endif %}
+
+    <h4>Vorhandenen Hetzner-Server zuordnen</h4>
+    <form method="post" action="{{ url_for('dashboard.import_project_server', project_id=project.id) }}">
+        <label for="provider_server_id">Hetzner Server-ID</label>
+        <input id="provider_server_id" name="provider_server_id" placeholder="z. B. 123456789" required>
+
+        <div class="actions">
+            <button type="submit">Server laden und zuordnen</button>
+        </div>
+    </form>
+
+    <h4>Projekt-Infrastruktur konfigurieren</h4>
+    <p class="muted">
+        Leere Felder fallen auf die globalen Hetzner-Defaults zurueck.
+    </p>
+    <form method="post" action="{{ url_for('dashboard.save_project_infrastructure', project_id=project.id) }}">
+        <label for="domain_cfg">Domain</label>
+        <input id="domain_cfg" name="domain" value="{{ project.domain or '' }}" placeholder="example.com">
+
+        <label for="desired_server_type_cfg">Server Type (Override)</label>
+        <input
+            id="desired_server_type_cfg"
+            name="desired_server_type"
+            value="{{ project.desired_server_type or '' }}"
+            placeholder="Global: {{ hetzner_defaults.default_server_type or '-' }}"
+        >
+
+        <label for="desired_location_cfg">Location (Override)</label>
+        <input
+            id="desired_location_cfg"
+            name="desired_location"
+            value="{{ project.desired_location or '' }}"
+            placeholder="Global: {{ hetzner_defaults.default_location or '-' }}"
+        >
+
+        <label for="desired_image_cfg">Image (Override)</label>
+        <input
+            id="desired_image_cfg"
+            name="desired_image"
+            value="{{ project.desired_image or '' }}"
+            placeholder="Global: {{ hetzner_defaults.default_image or '-' }}"
+        >
+
+        <div class="actions">
+            <button type="submit">Infrastruktur speichern</button>
+        </div>
+    </form>
+</div>
+
+<div class="card">
+    <h3>Deploy starten</h3>
+    <form method="post" action="{{ url_for('dashboard.deploy_project', project_id=project.id) }}">
+        <label for="server_id">Zielserver</label>
+        <select id="server_id" name="server_id">
+            <option value="">Automatisch waehlen / neu provisionieren</option>
+            {% for server in project.servers|sort(attribute='created_at', reverse=true) %}
+                <option value="{{ server.id }}">
+                    {{ server.name }} | {{ server.ipv4 or '-' }} | {{ server.status }}
+                </option>
+            {% endfor %}
+        </select>
+
+        <label for="mode">Mode</label>
+        <select id="mode" name="mode">
+            <option value="staging">staging</option>
+            <option value="production">production</option>
+        </select>
+
+        <label for="commit_sha">Commit SHA (optional)</label>
+        <input id="commit_sha" name="commit_sha" placeholder="abc123...">
+
+        <div class="actions">
+            <button type="submit">Deploy starten</button>
+        </div>
+    </form>
+</div>
+
+<div class="row">
+    <div class="col">
+        <div class="card">
+            <h3>Environment-Variablen</h3>
+            {% if project.environment_variables %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Key</th>
+                            <th>Value</th>
+                            <th>Secret</th>
+                            <th>Aktion</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in project.environment_variables %}
+                            <tr>
+                                <td>{{ item.key }}</td>
+                                <td>{{ item.value }}</td>
+                                <td>{{ 'ja' if item.is_secret else 'nein' }}</td>
+                                <td>
+                                    <form method="post" action="{{ url_for('dashboard.delete_project_env', project_id=project.id, env_id=item.id) }}" onsubmit="return confirm('Variable wirklich loeschen?');">
+                                        <button type="submit" class="secondary">Loeschen</button>
+                                    </form>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p>Keine Environment-Variablen vorhanden.</p>
+            {% endif %}
+
+            <h4>Neue Variable anlegen</h4>
+            <form method="post" action="{{ url_for('dashboard.add_project_env', project_id=project.id) }}">
+                <label for="env-key">Key</label>
+                <input id="env-key" name="key" placeholder="z. B. DATABASE_URL" required>
+
+                <label for="env-value">Value</label>
+                <input id="env-value" name="value" placeholder="Wert">
+
+                <div class="actions">
+                    <button type="submit">Variable speichern</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="col">
+        <div class="card">
+            <h3>Deployments</h3>
+            {% if deployments %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Status</th>
+                            <th>Erstellt</th>
+                            <th>Aktualisiert</th>
+                            <th>Zielmaschine</th>
+                            <th>Steps</th>
+                            <th>Fehlgeschlagene Steps</th>
+                            <th>Letzte Fehlermeldung</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for deployment in deployments %}
+                            {% set meta = deployment_meta.get(deployment.id, {}) %}
+                            <tr>
+                                <td><a href="{{ url_for('dashboard.deployment_detail', deployment_id=deployment.id) }}">{{ deployment.id }}</a></td>
+                                <td>
+                                    {% set deployment_status_class = 'status-' ~ deployment.status if deployment.status in ['pending', 'running', 'success', 'failed'] else 'status-unknown' %}
+                                    <span class="badge {{ deployment_status_class }}">{{ deployment.status }}</span>
+                                </td>
+                                <td>{{ deployment.created_at }}</td>
+                                <td>{{ deployment.updated_at }}</td>
+                                <td>
+                                    {% if meta.get('target_machine') %}
+                                        {{ meta.get('target_machine').name }}
+                                        <br>
+                                        <span class="muted">{{ meta.get('target_machine').provider }} | {{ meta.get('target_machine').ipv4 or '-' }}</span>
+                                    {% else %}
+                                        <span class="muted">-</span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ meta.get('steps_count', 0) }}</td>
+                                <td>
+                                    {% set failed_count = meta.get('failed_steps_count', 0) %}
+                                    {% if failed_count > 0 %}
+                                        <span class="badge status-failed">{{ failed_count }}</span>
+                                    {% else %}
+                                        <span class="badge status-success">0</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if meta.get('last_error') %}
+                                        <div class="error-box"><pre>{{ meta.get('last_error') }}</pre></div>
+                                    {% else %}
+                                        <span class="muted">-</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p>Keine Deployments vorhanden.</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

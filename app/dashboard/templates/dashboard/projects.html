@@ -1,0 +1,104 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Projekte | Dashboard{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col" style="flex: 2;">
+        <div class="card">
+            <h2>Projekte</h2>
+            {% if projects %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Status</th>
+                            <th>Domain</th>
+                            <th>Repository</th>
+                            <th>Deployments</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for project in projects %}
+                            <tr>
+                                <td><a href="{{ url_for('dashboard.project_detail', project_id=project.id) }}">{{ project.name }}</a></td>
+                                <td>
+                                    {% set status_class = 'status-' ~ project.status if project.status in ['pending', 'running', 'success', 'failed'] else 'status-unknown' %}
+                                    <span class="badge {{ status_class }}">{{ project.status }}</span>
+                                </td>
+                                <td>{{ project.domain or '-' }}</td>
+                                <td>{{ project.repository.url if project.repository else '-' }}</td>
+                                <td>{{ deployment_counts.get(project.id, 0) }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p>Keine Projekte vorhanden.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="col" style="flex: 1;">
+        <div class="card">
+            <h2>Projekt anlegen</h2>
+            <form method="post" action="{{ url_for('dashboard.create_project') }}">
+                <label for="name">Name *</label>
+                <input id="name" name="name" required>
+
+                <label for="slug">Slug (optional)</label>
+                <input id="slug" name="slug" placeholder="wird automatisch erzeugt">
+
+                <label for="framework">Framework</label>
+                <input id="framework" name="framework" placeholder="flask, node, django, ...">
+
+                <label for="domain">Domain</label>
+                <input id="domain" name="domain" placeholder="example.com">
+
+                <label for="desired_server_type">Server Type (Projekt-Override)</label>
+                <input
+                    id="desired_server_type"
+                    name="desired_server_type"
+                    value="{{ hetzner_defaults.default_server_type or '' }}"
+                    placeholder="z. B. cx22"
+                >
+
+                <label for="desired_location">Location (Projekt-Override)</label>
+                <input
+                    id="desired_location"
+                    name="desired_location"
+                    value="{{ hetzner_defaults.default_location or '' }}"
+                    placeholder="z. B. nbg1"
+                >
+
+                <label for="desired_image">Image (Projekt-Override)</label>
+                <input
+                    id="desired_image"
+                    name="desired_image"
+                    value="{{ hetzner_defaults.default_image or '' }}"
+                    placeholder="z. B. ubuntu-24.04"
+                >
+
+                <label for="environment">Environment</label>
+                <input id="environment" name="environment" value="production">
+
+                <label for="branch">Branch</label>
+                <input id="branch" name="branch" value="main">
+
+                <label for="repository_provider">Repository Provider</label>
+                <input id="repository_provider" name="repository_provider" value="github">
+
+                <label for="repository_url">Repository URL</label>
+                <input id="repository_url" name="repository_url" placeholder="https://github.com/org/repo.git">
+
+                <label for="env_lines">Environment-Variablen (eine pro Zeile: KEY=VALUE)</label>
+                <textarea id="env_lines" name="env_lines" placeholder="DATABASE_URL=...&#10;REDIS_URL=..."></textarea>
+
+                <div class="actions">
+                    <button type="submit">Projekt speichern</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

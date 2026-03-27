@@ -1,0 +1,303 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Deployment {{ deployment.id }} | Dashboard{% endblock %}
+
+{% block content %}
+{% set is_live = deployment.status in ['pending', 'running'] %}
+{% set deployment_status_class = 'status-' ~ deployment.status if deployment.status in ['pending', 'running', 'success', 'failed'] else 'status-unknown' %}
+
+<p>
+    <a href="{{ url_for('dashboard.project_detail', project_id=deployment.project_id) }}">Zurueck zum Projekt</a>
+</p>
+
+<div class="card {% if is_live %}status-running{% endif %}">
+    <h3>Live-Status</h3>
+    <p>
+        Aktueller Status:
+        <span class="badge {{ deployment_status_class }}">{{ deployment.status }}</span>
+    </p>
+    <div class="progress-wrap" aria-label="Deployment Fortschritt">
+        {% set total_steps = steps|length if steps else 1 %}
+        {% set done_steps = (steps | selectattr('status', 'equalto', 'success') | list | length) + (steps | selectattr('status', 'equalto', 'failed') | list | length) %}
+        {% set initial_percent = ((done_steps / total_steps) * 100) | int %}
+        <div class="progress-label-row">
+            <span id="progress-label">Fortschritt: {{ done_steps }}/{{ total_steps }} Steps</span>
+            <strong id="progress-percent">{{ initial_percent }}%</strong>
+        </div>
+        <div class="progress-track">
+            <div id="progress-bar" class="progress-bar" data-initial-percent="{{ initial_percent }}"></div>
+        </div>
+        <p class="muted" id="running-step-label">Aktiver Step: -</p>
+    </div>
+    {% if is_live %}
+        <p>
+            Naechstes Refresh in <strong id="refresh-countdown">5</strong> Sekunden.
+        </p>
+    {% else %}
+        <p>Deployment abgeschlossen. Auto-Refresh ist gestoppt.</p>
+    {% endif %}
+</div>
+
+<div class="card {% if is_live %}status-running{% endif %}">
+    <h3>Live-Log</h3>
+    <p class="muted">Zeigt laufende Step-Ausgaben waehrend des Deployments.</p>
+    <pre id="live-log" class="live-log">Warte auf Deployment-Logs...</pre>
+</div>
+
+<div class="card">
+    <h3>Deployment-Check</h3>
+    <table>
+        <tbody>
+            <tr>
+                <th>Server provisioniert</th>
+                <td>
+                    {% if provision_server_ok %}
+                        <span class="badge status-success">ja</span>
+                    {% else %}
+                        <span class="badge status-failed">nein</span>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <th>SSH erreichbar</th>
+                <td>
+                    {% if wait_for_ssh_ok %}
+                        <span class="badge status-success">ja</span>
+                    {% else %}
+                        <span class="badge status-failed">nein</span>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <th>Healthcheck erfolgreich</th>
+                <td>
+                    {% if healthcheck_ok %}
+                        <span class="badge status-success">ja</span>
+                    {% else %}
+                        <span class="badge status-failed">nein</span>
+                    {% endif %}
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="card">
+    <h2>Deployment #{{ deployment.id }}</h2>
+    <table>
+        <tbody>
+            <tr><th>Projekt</th><td><a href="{{ url_for('dashboard.project_detail', project_id=deployment.project_id) }}">{{ deployment.project.name if deployment.project else deployment.project_id }}</a></td></tr>
+            <tr>
+                <th>Status</th>
+                <td>
+                    <span class="badge {{ deployment_status_class }}">{{ deployment.status }}</span>
+                </td>
+            </tr>
+            <tr><th>Mode</th><td>{{ deployment.mode }}</td></tr>
+            <tr><th>Trigger</th><td>{{ deployment.trigger_source }}</td></tr>
+            <tr><th>Commit SHA</th><td>{{ deployment.commit_sha or '-' }}</td></tr>
+            <tr>
+                <th>Zielmaschine</th>
+                <td>
+                    {% if target_server %}
+                        {{ target_server.name }} ({{ target_server.provider }})
+                    {% else %}
+                        -
+                    {% endif %}
+                </td>
+            </tr>
+            <tr><th>Ziel-IP</th><td>{{ target_server.ipv4 if target_server else '-' }}</td></tr>
+            <tr><th>Server-Status</th><td>{{ target_server.status if target_server else '-' }}</td></tr>
+            <tr><th>Startzeit</th><td>{{ deployment.created_at }}</td></tr>
+            <tr><th>Endzeit / Letzte Aenderung</th><td>{{ deployment.updated_at }}</td></tr>
+        </tbody>
+    </table>
+
+    {% if deployment.error_message %}
+        <h3>Deployment-Fehler</h3>
+        <div class="error-box">
+            <pre class="pre-stderr">{{ deployment.error_message }}</pre>
+        </div>
+    {% endif %}
+
+    {% if deployment.output %}
+        <h3>Deployment-Output</h3>
+        <pre>{{ deployment.output }}</pre>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h3>Steps und Logs</h3>
+    {% if steps %}
+        <style>
+            .step-details { border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 10px; background: #fff; }
+            .step-details.failed { border-color: #efb1b1; border-left: 4px solid #c81e1e; background: #fff6f6; }
+            .step-summary { cursor: pointer; padding: 10px; list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+            .step-summary::-webkit-details-marker { display: none; }
+            .step-content { padding: 0 10px 10px; }
+            .step-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin: 8px 0 12px; }
+            .step-meta-item { border: 1px solid #e5e7eb; border-radius: 4px; padding: 6px 8px; background: #fafafa; }
+            .step-meta-label { font-size: 12px; color: #6b7280; display: block; }
+            .step-meta-value { font-weight: 600; }
+        </style>
+        {% for step in steps %}
+            {% set step_status_class = 'status-' ~ step.status if step.status in ['pending', 'running', 'success', 'failed'] else 'status-unknown' %}
+            {% set is_terminal = step.status in ['success', 'failed'] %}
+            {% if step.status == 'success' %}
+                {% set exit_code = 0 %}
+            {% elif step.status == 'failed' %}
+                {% set exit_code = 1 %}
+            {% else %}
+                {% set exit_code = '-' %}
+            {% endif %}
+            {% set started_at = step.created_at %}
+            {% set finished_at = step.updated_at if is_terminal else '-' %}
+
+            <details class="step-details {% if step.status == 'failed' %}failed{% endif %}" {% if step.status == 'failed' %}open{% endif %}>
+                <summary class="step-summary">
+                    <span><strong>{{ step.order_index }}. {{ step.name }}</strong></span>
+                    <span class="badge {{ step_status_class }}">{{ step.status }}</span>
+                </summary>
+
+                <div class="step-content">
+                    <div class="step-meta">
+                        <div class="step-meta-item">
+                            <span class="step-meta-label">exit_code</span>
+                            <span class="step-meta-value">{{ exit_code }}</span>
+                        </div>
+                        <div class="step-meta-item">
+                            <span class="step-meta-label">started_at</span>
+                            <span class="step-meta-value">{{ started_at }}</span>
+                        </div>
+                        <div class="step-meta-item">
+                            <span class="step-meta-label">finished_at</span>
+                            <span class="step-meta-value">{{ finished_at }}</span>
+                        </div>
+                    </div>
+
+                    <p><strong>stdout</strong></p>
+                    <pre>{{ step.output or '' }}</pre>
+
+                    {% if step.error_message %}
+                        <p class="stderr-title">stderr</p>
+                        <div class="error-box">
+                            <pre class="pre-stderr">{{ step.error_message }}</pre>
+                        </div>
+                    {% else %}
+                        <p><strong>stderr</strong></p>
+                        <pre></pre>
+                    {% endif %}
+                </div>
+            </details>
+        {% endfor %}
+    {% else %}
+        <p>Noch keine Steps vorhanden.</p>
+    {% endif %}
+</div>
+
+{% if is_live %}
+<script>
+(() => {
+    const statusUrl = "{{ url_for('dashboard.deployment_status', deployment_id=deployment.id) }}";
+    const countdownElement = document.getElementById("refresh-countdown");
+    const progressBar = document.getElementById("progress-bar");
+    const progressPercent = document.getElementById("progress-percent");
+    const progressLabel = document.getElementById("progress-label");
+    const runningStepLabel = document.getElementById("running-step-label");
+    const liveLog = document.getElementById("live-log");
+    const statusBadge = document.querySelector(".card.status-running .badge");
+    if (progressBar) {
+        const initialPercent = Number(progressBar.dataset.initialPercent || 0);
+        progressBar.style.width = String(initialPercent) + "%";
+    }
+
+    let seconds = 5;
+    let stopped = false;
+
+    const formatStepLog = (step) => {
+        const lines = [];
+        lines.push("[" + step.order_index + "] " + step.name + " | status=" + step.status);
+        if (step.output) {
+            lines.push("stdout:");
+            lines.push(step.output);
+        }
+        if (step.error_message) {
+            lines.push("stderr:");
+            lines.push(step.error_message);
+        }
+        return lines.join("\n");
+    };
+
+    const renderLiveData = (payload) => {
+        const p = payload.progress;
+        progressBar.style.width = String(p.percent) + "%";
+        progressPercent.textContent = String(p.percent) + "%";
+        progressLabel.textContent = "Fortschritt: " + p.done_steps + "/" + p.total_steps + " Steps";
+        runningStepLabel.textContent = "Aktiver Step: " + (p.running_step || "-");
+
+        if (statusBadge) {
+            statusBadge.textContent = payload.deployment.status;
+            statusBadge.className = "badge status-" + payload.deployment.status;
+        }
+
+        if (Array.isArray(payload.steps) && payload.steps.length > 0) {
+            const text = payload.steps.map(formatStepLog).join("\n\n----------------\n\n");
+            liveLog.textContent = text;
+            liveLog.scrollTop = liveLog.scrollHeight;
+        }
+
+        const terminal = payload.deployment.status === "success" || payload.deployment.status === "failed";
+        if (terminal) {
+            stopped = true;
+            if (countdownElement) {
+                countdownElement.textContent = "0";
+            }
+        }
+
+        return terminal;
+    };
+
+    const fetchStatus = async () => {
+        try {
+            const response = await fetch(statusUrl, { cache: "no-store" });
+            if (!response.ok) {
+                throw new Error("Status endpoint returned " + response.status);
+            }
+            const payload = await response.json();
+            const terminal = renderLiveData(payload);
+            if (terminal) {
+                window.location.reload();
+            }
+        } catch (err) {
+            liveLog.textContent = "Fehler beim Laden der Live-Daten: " + String(err);
+        }
+    };
+
+    const intervalId = window.setInterval(() => {
+        if (stopped) {
+            window.clearInterval(intervalId);
+            return;
+        }
+        seconds -= 1;
+        if (countdownElement && seconds >= 0) {
+            countdownElement.textContent = String(seconds);
+        }
+        if (seconds <= 0) {
+            seconds = 5;
+            fetchStatus();
+        }
+    }, 1000);
+
+    fetchStatus();
+})();
+</script>
+{% endif %}
+
+<style>
+.progress-wrap { margin-top: 10px; }
+.progress-label-row { display: flex; justify-content: space-between; margin-bottom: 6px; }
+.progress-track { width: 100%; height: 12px; background: #e5e7eb; border-radius: 999px; overflow: hidden; }
+.progress-bar { height: 100%; background: linear-gradient(90deg, #159957, #38ef7d); transition: width .4s ease; }
+.live-log { max-height: 320px; overflow: auto; background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 12px; }
+</style>
+{% endblock %}

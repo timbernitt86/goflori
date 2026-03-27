@@ -1,0 +1,328 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Hetzner Konfiguration | Dashboard{% endblock %}
+
+{% block content %}
+<style>
+    .help-text { font-size: 0.82rem; color: #888; margin: 2px 0 10px 0; line-height: 1.4; }
+    .field-group { margin-bottom: 0.2rem; }
+    .section-intro { background: #1a1a1a; border-left: 3px solid #555; padding: 0.75rem 1rem; margin-bottom: 1.25rem; font-size: 0.9rem; color: #ccc; line-height: 1.5; }
+    .step-badge { display: inline-block; background: #333; color: #eee; border-radius: 50%; width: 1.4rem; height: 1.4rem; text-align: center; line-height: 1.4rem; font-size: 0.8rem; margin-right: 0.4rem; }
+    .resource-grid { display: grid; grid-template-columns: repeat(3, minmax(220px, 1fr)); gap: 12px; }
+    .resource-card { border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px; background: #fff; }
+    .resource-card h4 { margin: 0 0 8px 0; font-size: 0.95rem; }
+    .resource-list { margin: 0; padding-left: 18px; max-height: 260px; overflow-y: auto; }
+    .resource-list li { margin-bottom: 6px; }
+    .resource-meta { color: #6b7280; font-size: 0.78rem; }
+    .field-hint { color: #6b7280; font-size: 0.78rem; margin: 6px 0 10px 0; }
+    .suggestion-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .suggestion-chip {
+        padding: 4px 8px;
+        border: 1px solid #cbd5e1;
+        background: #f8fafc;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        cursor: pointer;
+        color: #0f172a;
+    }
+    .suggestion-chip:hover { background: #eef2ff; border-color: #94a3b8; }
+    @media (max-width: 980px) {
+        .resource-grid { grid-template-columns: 1fr; }
+    }
+</style>
+
+<p><a href="{{ url_for('dashboard.projects') }}">← Zurück zu Projekten</a></p>
+
+<div class="card">
+    <h2>Hetzner Cloud – Zugangsdaten &amp; Einstellungen</h2>
+    <div class="section-intro">
+        Hier verbindest du dieses System mit deinem <strong>Hetzner Cloud</strong>-Konto.
+        Hetzner Cloud ist ein Anbieter für virtuelle Server (ähnlich wie ein gemieteter Computer im Internet).
+        Diese Konfiguration wird gebraucht, damit das System automatisch Server für deine Projekte erstellen kann.
+    </div>
+
+    <table>
+        <tbody>
+            <tr><th>Verbundener Anbieter</th><td>Hetzner Cloud</td></tr>
+            <tr>
+                <th>Zuletzt gespeichert</th>
+                <td>
+                    {% if setting.id and setting.updated_at %}
+                        {{ setting.updated_at.strftime('%d.%m.%Y %H:%M:%S') }}
+                    {% else %}
+                        Noch nicht gespeichert
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <th>API-Zugangsdaten</th>
+                <td>
+                    {% if token_configured %}
+                        <span class="badge status-success">gesetzt</span>
+                    {% else %}
+                        <span class="badge status-failed">nicht gesetzt – Verbindung nicht möglich</span>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <th>SSH Public Key</th>
+                <td>
+                    {% if ssh_public_key_configured %}
+                        <span class="badge status-success">gesetzt</span>
+                    {% else %}
+                        <span class="badge status-unknown">nicht gesetzt (optional)</span>
+                    {% endif %}
+                </td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="actions" style="margin-top:1rem;">
+        <button
+            type="submit"
+            class="secondary"
+            form="hetzner-config-form"
+            formaction="{{ url_for('dashboard.test_hetzner_connection') }}"
+            formmethod="post"
+        >
+            Verbindung testen
+        </button>
+    </div>
+    <p class="help-text" style="margin-top:0.5rem;">
+        Klicke auf „Verbindung testen", um zu prüfen, ob der eingetragene API-Token funktioniert und Hetzner erreichbar ist.
+    </p>
+</div>
+
+<div class="card">
+    <h3>Verfügbare Ressourcen aus Hetzner Cloud</h3>
+    <p class="muted">
+        Diese Listen werden live über die Hetzner API geladen und dienen als Grundlage für die spätere Serverauswahl.
+    </p>
+
+    {% if resource_errors %}
+        <div class="error-box">
+            <strong>Einige Ressourcen konnten nicht geladen werden:</strong>
+            <ul>
+                {% for err in resource_errors %}
+                    <li>{{ err }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    {% endif %}
+
+    <div class="resource-grid">
+        <div class="resource-card">
+            <h4>Server-Typen ({{ resources.server_types|length }})</h4>
+            {% if resources.server_types %}
+                <ul class="resource-list">
+                    {% for st in resources.server_types %}
+                        <li>
+                            <strong>{{ st.name }}</strong>
+                            {% if st.name == setting.default_server_type %}
+                                <span class="badge status-success">Standard</span>
+                            {% endif %}
+                            {% if st.deprecated %}
+                                <span class="badge status-failed">veraltet</span>
+                            {% endif %}
+                            <div class="resource-meta">
+                                {{ st.cores }} CPU, {{ st.memory_gb }} GB RAM, {{ st.disk_gb }} GB Disk, {{ st.architecture }}
+                            </div>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p class="muted">Keine Server-Typen geladen.</p>
+            {% endif %}
+        </div>
+
+        <div class="resource-card">
+            <h4>Locations ({{ resources.locations|length }})</h4>
+            {% if resources.locations %}
+                <ul class="resource-list">
+                    {% for loc in resources.locations %}
+                        <li>
+                            <strong>{{ loc.name }}</strong>
+                            {% if loc.name == setting.default_location %}
+                                <span class="badge status-success">Standard</span>
+                            {% endif %}
+                            <div class="resource-meta">
+                                {{ loc.city }}, {{ loc.country }}{% if loc.network_zone %} · {{ loc.network_zone }}{% endif %}
+                            </div>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p class="muted">Keine Locations geladen.</p>
+            {% endif %}
+        </div>
+
+        <div class="resource-card">
+            <h4>Images ({{ resources.images|length }})</h4>
+            {% if resources.images %}
+                <ul class="resource-list">
+                    {% for img in resources.images %}
+                        <li>
+                            <strong>{{ img.name or img.description }}</strong>
+                            {% if img.selector == setting.default_image %}
+                                <span class="badge status-success">Standard</span>
+                            {% endif %}
+                            {% if img.deprecated %}
+                                <span class="badge status-failed">veraltet</span>
+                            {% endif %}
+                            <div class="resource-meta">
+                                {{ img.os_flavor }} {{ img.os_version }}{% if img.architecture %} · {{ img.architecture }}{% endif %}
+                            </div>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p class="muted">Keine Images geladen.</p>
+            {% endif %}
+        </div>
+
+        <div class="resource-card">
+            <h4>SSH-Keys ({{ resources.ssh_keys|length }})</h4>
+            {% if resources.ssh_keys %}
+                <ul class="resource-list">
+                    {% for key in resources.ssh_keys %}
+                        <li>
+                            <strong>{{ key.name }}</strong>
+                            {% if key.name == setting.ssh_key_name %}
+                                <span class="badge status-success">Standard</span>
+                            {% endif %}
+                            {% if key.fingerprint %}
+                                <div class="resource-meta">{{ key.fingerprint }}</div>
+                            {% endif %}
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p class="muted">Keine SSH-Keys geladen.</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h3>Standardwerte ändern</h3>
+    <div class="section-intro">
+        Hier kannst du die Standardwerte für spätere Deployments direkt ändern.
+        Du kannst frei tippen. Die kleinen Vorschlags-Buttons darunter übernehmen Werte aus der Hetzner-API mit einem Klick.
+    </div>
+
+    <form id="hetzner-config-form" method="post" action="{{ url_for('dashboard.save_hetzner_settings') }}">
+
+        <div class="field-group">
+            <label for="api_token"><span class="step-badge">1</span> API-Token (Passwort für Hetzner)</label>
+            <input
+                id="api_token"
+                name="api_token"
+                type="password"
+                autocomplete="new-password"
+                placeholder="{% if token_configured %}Bereits gespeichert (aus Sicherheitsgruenden ausgeblendet){% else %}API-Token eingeben{% endif %}"
+            >
+            <p class="help-text">
+                Diesen Token bekommst du im <strong>Hetzner Cloud Console</strong> unter
+                <em>Projekt → Sicherheit → API-Token → Token erstellen</em>.
+                Er ist wie ein Passwort – gib ihn nirgendwo weiter.<br>
+                <strong>Leer lassen</strong> = der bisherige Token bleibt erhalten.
+                Aus Sicherheitsgründen wird ein gespeicherter Token beim Laden der Seite nicht erneut angezeigt.
+            </p>
+        </div>
+
+        <div class="field-group">
+            <label for="default_location"><span class="step-badge">2</span> Default Location</label>
+                <input
+                    id="default_location"
+                    name="default_location"
+                    value="{{ setting.default_location or '' }}"
+                placeholder="z. B. nbg1"
+                >
+            <p class="field-hint">Aktuell: <strong>{{ setting.default_location or 'nicht gesetzt' }}</strong></p>
+            {% if resources.locations %}
+                <div class="suggestion-row">
+                    {% for loc in resources.locations[:12] %}
+                        <button type="button" class="suggestion-chip" onclick="document.getElementById('default_location').value='{{ loc.name }}'">{{ loc.name }}</button>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </div>
+
+        <div class="field-group">
+            <label for="default_server_type"><span class="step-badge">3</span> Default Server Type</label>
+                <input
+                    id="default_server_type"
+                    name="default_server_type"
+                    value="{{ setting.default_server_type or '' }}"
+                placeholder="z. B. cx22"
+                >
+            <p class="field-hint">Aktuell: <strong>{{ setting.default_server_type or 'nicht gesetzt' }}</strong></p>
+            {% if resources.server_types %}
+                <div class="suggestion-row">
+                    {% for st in resources.server_types[:12] %}
+                        <button type="button" class="suggestion-chip" onclick="document.getElementById('default_server_type').value='{{ st.name }}'">{{ st.name }}</button>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </div>
+
+        <div class="field-group">
+            <label for="default_image"><span class="step-badge">4</span> Default Image</label>
+                <input
+                    id="default_image"
+                    name="default_image"
+                    value="{{ setting.default_image or '' }}"
+                placeholder="z. B. ubuntu-24.04"
+                >
+            <p class="field-hint">Aktuell: <strong>{{ setting.default_image or 'nicht gesetzt' }}</strong></p>
+            {% if resources.images %}
+                <div class="suggestion-row">
+                    {% for img in resources.images[:12] %}
+                        <button type="button" class="suggestion-chip" onclick="document.getElementById('default_image').value='{{ img.selector }}'">{{ img.selector }}</button>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </div>
+
+        <div class="field-group">
+            <label for="ssh_key_name"><span class="step-badge">5</span> Optional SSH Key Name</label>
+                <input
+                    id="ssh_key_name"
+                    name="ssh_key_name"
+                    value="{{ setting.ssh_key_name or '' }}"
+                    placeholder="SSH-Key-Name (optional)"
+                >
+            <p class="field-hint">Aktuell: <strong>{{ setting.ssh_key_name or 'nicht gesetzt' }}</strong></p>
+            {% if resources.ssh_keys %}
+                <div class="suggestion-row">
+                    {% for key in resources.ssh_keys[:12] %}
+                        <button type="button" class="suggestion-chip" onclick="document.getElementById('ssh_key_name').value='{{ key.name }}'">{{ key.name }}</button>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </div>
+
+        <div class="field-group">
+            <label for="ssh_public_key"><span class="step-badge">6</span> SSH Public Key (optional)</label>
+            <textarea
+                id="ssh_public_key"
+                name="ssh_public_key"
+                placeholder="{% if ssh_public_key_configured %}Bereits gespeichert (aus Sicherheitsgruenden ausgeblendet){% else %}Oeffentlichen SSH-Schluessel hier einfuegen{% endif %}"
+                rows="3"
+            ></textarea>
+            <p class="help-text">
+                Der öffentliche Teil deines SSH-Schlüssels.
+                Du findest ihn auf deinem Computer in der Datei <code>~/.ssh/...</code> mit der Endung <code>.pub</code>.
+                Dieser Schlüssel wird genutzt, um dich ohne Passwort auf neuen Servern anzumelden.<br>
+                <strong>Leer lassen</strong> = der gespeicherte Schlüssel bleibt erhalten.
+                Aus Sicherheitsgründen wird ein gespeicherter Schlüssel beim Laden der Seite nicht erneut angezeigt.
+                Niemals den <em>privaten</em> Schlüssel eintragen!
+            </p>
+        </div>
+
+        <div class="actions">
+            <button type="submit">Standardwerte speichern</button>
+        </div>
+    </form>
+</div>
+{% endblock %}
