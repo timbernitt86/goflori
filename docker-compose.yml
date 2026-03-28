@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  web:
+    build: .
+    command: python run.py
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - FLASK_ENV=production
+      - ORBITAL_INLINE_DEPLOY_ON_QUEUE_ERROR=true
+    depends_on: []
