@@ -438,6 +438,15 @@
         <nav class="nav-links">
             <a class="nav-chip" href="{{ url_for('dashboard.projects') }}">Projekte</a>
             <a class="nav-chip" href="{{ url_for('dashboard.hetzner_settings') }}">Provider Setup</a>
+            {% if current_user.is_authenticated %}
+                <span class="nav-chip" style="color: var(--ink-500); cursor: default;">
+                    {{ current_user.name }}
+                    {% if current_user.company %}&nbsp;· {{ current_user.company.name }}{% endif %}
+                </span>
+                <form method="post" action="{{ url_for('auth.logout') }}" style="display:inline;">
+                    <button type="submit" class="secondary" style="padding: 7px 12px; border-radius: 999px; font-size: 13px;">Abmelden</button>
+                </form>
+            {% endif %}
         </nav>
     </div>
 </header>

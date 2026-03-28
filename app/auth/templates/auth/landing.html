@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}goflori – Deploy ohne DevOps{% endblock %}</title>
+    <style>
+        @import url("https://fonts.googleapis.com/css2?family=Aldrich&family=Space+Grotesk:wght@400;500;600;700&display=swap");
+
+        :root {
+            --bg-0: #f3fcfb;
+            --bg-1: #e8f5ff;
+            --bg-2: #fff7ed;
+            --ink-900: #0b1a2a;
+            --ink-700: #2a3a4d;
+            --ink-500: #5f6f82;
+            --line: #c7d7e6;
+            --line-strong: #8da9c2;
+            --card: rgba(255, 255, 255, 0.82);
+            --primary: #0f9eb3;
+            --primary-strong: #0a6d95;
+            --accent: #f59e0b;
+            --danger: #dc2626;
+            --success: #15803d;
+            --radius-lg: 18px;
+            --radius-md: 12px;
+            --radius-sm: 10px;
+            --shadow-soft: 0 16px 40px rgba(11, 26, 42, 0.08);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            color: var(--ink-900);
+            font-family: "Space Grotesk", "Trebuchet MS", "Segoe UI", sans-serif;
+            background:
+                radial-gradient(700px 460px at 8% -5%, #d8fff5 0%, transparent 70%),
+                radial-gradient(620px 420px at 90% 0%, #ffe9c5 0%, transparent 72%),
+                linear-gradient(150deg, var(--bg-0) 0%, var(--bg-1) 52%, var(--bg-2) 100%);
+            min-height: 100vh;
+        }
+
+        header {
+            position: sticky;
+            top: 0;
+            z-index: 20;
+            padding: 14px 24px;
+            border-bottom: 1px solid rgba(141, 169, 194, 0.45);
+            backdrop-filter: blur(14px);
+            background: rgba(248, 253, 255, 0.84);
+        }
+
+        .nav-wrap {
+            max-width: 1100px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .brand {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--ink-900);
+            text-decoration: none;
+        }
+
+        .brand-mark {
+            width: 36px;
+            height: 36px;
+            border-radius: 12px;
+            display: grid;
+            place-items: center;
+            font-family: "Aldrich", sans-serif;
+            font-size: 15px;
+            color: #fff;
+            background: linear-gradient(140deg, var(--primary) 0%, var(--primary-strong) 66%, #065f82 100%);
+            box-shadow: 0 8px 20px rgba(15, 109, 149, 0.34);
+        }
+
+        .brand-text { display: flex; flex-direction: column; line-height: 1.05; }
+        .brand-title { font-family: "Aldrich", sans-serif; letter-spacing: 0.04em; font-size: 19px; }
+        .brand-sub { color: var(--ink-500); font-size: 12px; font-weight: 600; }
+
+        .nav-ctas { display: flex; gap: 10px; align-items: center; }
+
+        .btn-ghost {
+            padding: 8px 16px;
+            border-radius: 999px;
+            border: 1px solid var(--line-strong);
+            background: rgba(255,255,255,0.7);
+            color: var(--ink-700);
+            font-family: "Space Grotesk", sans-serif;
+            font-weight: 700;
+            font-size: 14px;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+
+        .btn-ghost:hover { border-color: var(--primary); color: var(--primary-strong); text-decoration: none; }
+
+        .btn-primary {
+            padding: 9px 20px;
+            border-radius: 999px;
+            border: none;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-strong) 100%);
+            color: #fff;
+            font-family: "Space Grotesk", sans-serif;
+            font-weight: 700;
+            font-size: 14px;
+            text-decoration: none;
+            box-shadow: 0 8px 18px rgba(10, 109, 149, 0.28);
+            transition: all 0.2s;
+        }
+
+        .btn-primary:hover { transform: translateY(-1px); filter: brightness(1.05); text-decoration: none; }
+
+        /* Sections */
+        .hero-section {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 90px 24px 70px;
+            text-align: center;
+        }
+
+        .eyebrow {
+            display: inline-block;
+            padding: 5px 14px;
+            border-radius: 999px;
+            background: linear-gradient(90deg, rgba(15, 158, 179, 0.14), rgba(245, 158, 11, 0.14));
+            border: 1px solid rgba(15, 158, 179, 0.3);
+            color: var(--primary-strong);
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            margin-bottom: 22px;
+        }
+
+        h1 {
+            font-family: "Aldrich", "Space Grotesk", sans-serif;
+            font-size: clamp(2.2rem, 5vw, 3.8rem);
+            line-height: 1.1;
+            color: #081828;
+            letter-spacing: 0.01em;
+            margin-bottom: 20px;
+        }
+
+        h1 .accent { color: var(--primary); }
+
+        .hero-sub {
+            font-size: 1.15rem;
+            color: var(--ink-700);
+            max-width: 640px;
+            margin: 0 auto 36px;
+            line-height: 1.65;
+        }
+
+        .hero-ctas { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+
+        .btn-cta-primary {
+            padding: 14px 32px;
+            border-radius: 14px;
+            border: none;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-strong) 100%);
+            color: #fff;
+            font-family: "Space Grotesk", sans-serif;
+            font-weight: 700;
+            font-size: 16px;
+            text-decoration: none;
+            box-shadow: 0 12px 28px rgba(10, 109, 149, 0.35);
+            transition: all 0.2s;
+        }
+
+        .btn-cta-primary:hover { transform: translateY(-2px); filter: brightness(1.07); text-decoration: none; }
+
+        .btn-cta-ghost {
+            padding: 14px 32px;
+            border-radius: 14px;
+            border: 2px solid #aac8de;
+            background: rgba(255,255,255, 0.6);
+            color: var(--ink-700);
+            font-family: "Space Grotesk", sans-serif;
+            font-weight: 700;
+            font-size: 16px;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+
+        .btn-cta-ghost:hover { border-color: var(--primary); color: var(--primary-strong); text-decoration: none; }
+
+        /* Features */
+        .features-section {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 0 24px 80px;
+        }
+
+        .section-label {
+            text-align: center;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            color: var(--ink-500);
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .section-title {
+            text-align: center;
+            font-family: "Aldrich", "Space Grotesk", sans-serif;
+            font-size: clamp(1.5rem, 3vw, 2.2rem);
+            color: #081828;
+            margin-bottom: 40px;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 18px;
+        }
+
+        .feature-card {
+            background: var(--card);
+            border: 1px solid rgba(141, 169, 194, 0.55);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-soft);
+            padding: 24px;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 24px 50px rgba(11, 26, 42, 0.13);
+        }
+
+        .feature-icon {
+            width: 44px;
+            height: 44px;
+            border-radius: 14px;
+            display: grid;
+            place-items: center;
+            font-size: 20px;
+            margin-bottom: 14px;
+        }
+
+        .fi-blue { background: linear-gradient(135deg, #c0f0f8, #a2d9f1); }
+        .fi-orange { background: linear-gradient(135deg, #ffeacc, #ffd59a); }
+        .fi-green { background: linear-gradient(135deg, #ccf5e0, #9de8c2); }
+        .fi-purple { background: linear-gradient(135deg, #e4daff, #c9b8ff); }
+        .fi-pink { background: linear-gradient(135deg, #ffe0e0, #ffbfc0); }
+
+        .feature-card h3 {
+            font-family: "Aldrich", "Space Grotesk", sans-serif;
+            font-size: 1rem;
+            color: #102234;
+            margin-bottom: 8px;
+        }
+
+        .feature-card p { font-size: 14px; color: var(--ink-700); line-height: 1.6; }
+
+        /* Steps */
+        .steps-section {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 10px 24px 80px;
+        }
+
+        .steps-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0; }
+
+        .step {
+            position: relative;
+            padding: 24px 20px;
+            text-align: center;
+        }
+
+        .step-number {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary), var(--primary-strong));
+            color: #fff;
+            font-family: "Aldrich", sans-serif;
+            font-size: 16px;
+            display: grid;
+            place-items: center;
+            margin: 0 auto 12px;
+            box-shadow: 0 6px 14px rgba(15, 109, 149, 0.3);
+        }
+
+        .step h4 {
+            font-family: "Aldrich", "Space Grotesk", sans-serif;
+            font-size: 0.9rem;
+            color: #102234;
+            margin-bottom: 6px;
+        }
+
+        .step p { font-size: 13px; color: var(--ink-500); }
+
+        /* CTA Banner */
+        .cta-section {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 0 24px 100px;
+        }
+
+        .cta-banner {
+            border-radius: var(--radius-lg);
+            padding: 56px 40px;
+            text-align: center;
+            background: linear-gradient(135deg, #0f9eb3 0%, #0a6d95 60%, #065f82 100%);
+            box-shadow: 0 20px 50px rgba(10, 109, 149, 0.4);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .cta-banner::before {
+            content: "";
+            position: absolute;
+            width: 300px;
+            height: 300px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.06);
+            top: -80px;
+            right: -60px;
+        }
+
+        .cta-banner h2 {
+            font-family: "Aldrich", sans-serif;
+            color: #fff;
+            font-size: clamp(1.5rem, 3vw, 2.2rem);
+            margin-bottom: 12px;
+        }
+
+        .cta-banner p { color: rgba(255,255,255,0.82); font-size: 1rem; margin-bottom: 28px; }
+
+        .btn-cta-white {
+            display: inline-block;
+            padding: 14px 32px;
+            border-radius: 14px;
+            background: #fff;
+            color: var(--primary-strong);
+            font-family: "Space Grotesk", sans-serif;
+            font-weight: 700;
+            font-size: 16px;
+            text-decoration: none;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.2);
+            transition: all 0.2s;
+        }
+
+        .btn-cta-white:hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(0,0,0,0.25); text-decoration: none; }
+
+        footer {
+            border-top: 1px solid var(--line);
+            padding: 24px;
+            text-align: center;
+            color: var(--ink-500);
+            font-size: 13px;
+        }
+
+        .flash {
+            padding: 11px 16px;
+            border-radius: var(--radius-md);
+            margin: 12px 0;
+            border: 1px solid transparent;
+            font-weight: 600;
+            max-width: 1100px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .flash.success { background: #e9fff3; border-color: #95ddb2; color: #0e5d2b; }
+        .flash.error { background: #fff0f0; border-color: #f1a6a6; color: #9c1c1c; }
+        .flash.warning { background: #fff8ea; border-color: #efc77f; color: #8a5d00; }
+
+        @media (max-width: 768px) {
+            .hero-section { padding: 60px 16px 50px; }
+            .cta-banner { padding: 40px 20px; }
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <div class="nav-wrap">
+        <a class="brand" href="{{ url_for('auth.landing') }}">
+            <span class="brand-mark">gF</span>
+            <span class="brand-text">
+                <span class="brand-title">goflori</span>
+                <span class="brand-sub">Flori kuemmert sich um DevOps</span>
+            </span>
+        </a>
+        <div class="nav-ctas">
+            <a class="btn-ghost" href="{{ url_for('auth.login') }}">Einloggen</a>
+            <a class="btn-primary" href="{{ url_for('auth.register') }}">Kostenlos starten</a>
+        </div>
+    </div>
+</header>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+        {% for category, message in messages %}
+            <div class="flash {{ category }}" style="padding: 11px 24px; margin: 12px auto; max-width:1100px;">{{ message }}</div>
+        {% endfor %}
+    {% endif %}
+{% endwith %}
+
+<!-- Hero -->
+<section class="hero-section">
+    <p class="eyebrow">App deployen ohne DevOps-Wissen</p>
+    <h1>Repository verknüpfen.<br><span class="accent">Flori macht den Rest.</span></h1>
+    <p class="hero-sub">
+        goflori provisioniert Server, baut Docker-Container, konfiguriert Nginx und SSL –
+        vollautomatisch. Du pushst Code, wir liefern die Live-URL.
+    </p>
+    <div class="hero-ctas">
+        <a class="btn-cta-primary" href="{{ url_for('auth.register') }}">Jetzt kostenlos registrieren</a>
+        <a class="btn-cta-ghost" href="{{ url_for('auth.login') }}">Bereits registriert? Login</a>
+    </div>
+</section>
+
+<!-- Features -->
+<section class="features-section">
+    <p class="section-label">Was goflori macht</p>
+    <h2 class="section-title">Alles automatisiert, nichts vergessen</h2>
+    <div class="features-grid">
+        <div class="feature-card">
+            <div class="feature-icon fi-blue">🚀</div>
+            <h3>One-Click Deploy</h3>
+            <p>Repository-Link einfügen, auf Deploy klicken – goflori erledigt Server-Provisionierung, Docker-Build und Start automatisch.</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon fi-orange">🔒</div>
+            <h3>SSL inklusive</h3>
+            <p>Certbot-Integration sorgt dafür, dass deine App immer unter HTTPS erreichbar ist – ohne manuelle Konfiguration.</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon fi-green">📊</div>
+            <h3>Live-Logs & Status</h3>
+            <p>Jeder Deployment-Step wird protokolliert. Du siehst genau wo etwas klemmt und bekommst Lösungsvorschläge.</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon fi-purple">🏢</div>
+            <h3>Team-fähig</h3>
+            <p>Mehrere Team-Mitglieder pro Firma. Alle Projekte, Server und Konfigurationen in einem Workspace.</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon fi-pink">🔁</div>
+            <h3>Redeploy in Sekunden</h3>
+            <p>Änderungen gebaut? Ein Klick auf Redeploy – derselbe Server, dasselbe Setup, neue Version.</p>
+        </div>
+    </div>
+</section>
+
+<!-- Steps -->
+<section class="steps-section">
+    <p class="section-label">So funktioniert es</p>
+    <h2 class="section-title">In 4 Schritten live</h2>
+    <div class="steps-list">
+        <div class="step">
+            <div class="step-number">1</div>
+            <h4>Registrieren</h4>
+            <p>Firma anlegen, Account erstellen – dauert 30 Sekunden.</p>
+        </div>
+        <div class="step">
+            <div class="step-number">2</div>
+            <h4>Hetzner verbinden</h4>
+            <p>API-Token von Hetzner Cloud eingeben. Einmalig, dann läuft alles automatisch.</p>
+        </div>
+        <div class="step">
+            <div class="step-number">3</div>
+            <h4>Projekt anlegen</h4>
+            <p>Repository-URL, optionale Domain – der Rest ist optional.</p>
+        </div>
+        <div class="step">
+            <div class="step-number">4</div>
+            <h4>Deployen</h4>
+            <p>Auf Deploy klicken. goflori provisioniert, baut und startet.</p>
+        </div>
+    </div>
+</section>
+
+<!-- CTA Banner -->
+<section class="cta-section">
+    <div class="cta-banner">
+        <h2>Bereit? Erstes Projekt in unter 5 Minuten live.</h2>
+        <p>Keine Kreditkarte. Kein Infrastructure-Know-how erforderlich.</p>
+        <a class="btn-cta-white" href="{{ url_for('auth.register') }}">Jetzt kostenlos starten →</a>
+    </div>
+</section>
+
+<footer>
+    <p>© goflori · Flori kuemmert sich um DevOps</p>
+</footer>
+
+</body>
+</html>

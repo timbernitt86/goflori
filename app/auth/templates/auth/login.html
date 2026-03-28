@@ -1,0 +1,43 @@
+{% extends "auth/base.html" %}
+
+{% block title %}Einloggen | goflori{% endblock %}
+
+{% block content %}
+<h1>Willkommen zurück</h1>
+<p class="subtitle">Einloggen mit deiner E-Mail-Adresse.</p>
+
+<form method="post" action="{{ url_for('auth.login_post') }}">
+    <label for="email">E-Mail-Adresse</label>
+    <input
+        id="email"
+        name="email"
+        type="email"
+        required
+        autocomplete="email"
+        value="{{ form_email or '' }}"
+        placeholder="du@firma.com"
+    >
+
+    <label for="password">Passwort</label>
+    <input
+        id="password"
+        name="password"
+        type="password"
+        required
+        autocomplete="current-password"
+        placeholder="••••••••"
+    >
+
+    <div class="remember-row">
+        <input id="remember" name="remember" type="checkbox" value="1">
+        <label for="remember">Angemeldet bleiben</label>
+    </div>
+
+    <button type="submit" class="btn-full">Einloggen</button>
+</form>
+
+<div class="auth-footer">
+    Noch kein Account?
+    <a href="{{ url_for('auth.register') }}">Jetzt registrieren</a>
+</div>
+{% endblock %}

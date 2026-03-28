@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}goflori{% endblock %}</title>
+    <style>
+        @import url("https://fonts.googleapis.com/css2?family=Aldrich&family=Space+Grotesk:wght@400;500;600;700&display=swap");
+
+        :root {
+            --bg-0: #f3fcfb;
+            --bg-1: #e8f5ff;
+            --bg-2: #fff7ed;
+            --ink-900: #0b1a2a;
+            --ink-700: #2a3a4d;
+            --ink-500: #5f6f82;
+            --line: #c7d7e6;
+            --card: rgba(255, 255, 255, 0.88);
+            --primary: #0f9eb3;
+            --primary-strong: #0a6d95;
+            --danger: #dc2626;
+            --radius-lg: 18px;
+            --radius-md: 12px;
+            --radius-sm: 10px;
+            --shadow-soft: 0 16px 40px rgba(11, 26, 42, 0.08);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            color: var(--ink-900);
+            font-family: "Space Grotesk", "Trebuchet MS", "Segoe UI", sans-serif;
+            background:
+                radial-gradient(700px 460px at 8% -5%, #d8fff5 0%, transparent 70%),
+                radial-gradient(620px 420px at 90% 0%, #ffe9c5 0%, transparent 72%),
+                linear-gradient(150deg, var(--bg-0) 0%, var(--bg-1) 52%, var(--bg-2) 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            padding: 14px 24px;
+            border-bottom: 1px solid rgba(141, 169, 194, 0.45);
+            backdrop-filter: blur(14px);
+            background: rgba(248, 253, 255, 0.84);
+        }
+
+        .nav-wrap {
+            max-width: 1100px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .brand {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--ink-900);
+            text-decoration: none;
+        }
+
+        .brand-mark {
+            width: 36px;
+            height: 36px;
+            border-radius: 12px;
+            display: grid;
+            place-items: center;
+            font-family: "Aldrich", sans-serif;
+            font-size: 15px;
+            color: #fff;
+            background: linear-gradient(140deg, var(--primary) 0%, var(--primary-strong) 66%, #065f82 100%);
+            box-shadow: 0 8px 20px rgba(15, 109, 149, 0.34);
+        }
+
+        .brand-text { display: flex; flex-direction: column; line-height: 1.05; }
+        .brand-title { font-family: "Aldrich", sans-serif; letter-spacing: 0.04em; font-size: 19px; }
+        .brand-sub { color: var(--ink-500); font-size: 12px; font-weight: 600; }
+
+        .nav-link {
+            color: var(--primary-strong);
+            font-weight: 700;
+            text-decoration: none;
+            font-size: 14px;
+        }
+
+        .nav-link:hover { text-decoration: underline; }
+
+        main {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 40px 16px;
+        }
+
+        .auth-card {
+            background: var(--card);
+            border: 1px solid rgba(141, 169, 194, 0.55);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-soft);
+            backdrop-filter: blur(8px);
+            padding: 36px 32px;
+            width: 100%;
+            max-width: 440px;
+        }
+
+        .auth-card h1 {
+            font-family: "Aldrich", "Space Grotesk", sans-serif;
+            font-size: 1.5rem;
+            color: #0c1f32;
+            margin-bottom: 6px;
+        }
+
+        .auth-card .subtitle {
+            color: var(--ink-500);
+            font-size: 14px;
+            margin-bottom: 24px;
+        }
+
+        label {
+            display: block;
+            margin: 14px 0 5px;
+            font-size: 13px;
+            color: #375066;
+            font-weight: 700;
+        }
+
+        input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #b8ccde;
+            border-radius: var(--radius-sm);
+            background: rgba(255,255,255,0.9);
+            color: #0f2235;
+            font-family: "Space Grotesk", sans-serif;
+            font-size: 14px;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(15, 158, 179, 0.16);
+        }
+
+        .divider {
+            border: none;
+            border-top: 1px solid var(--line);
+            margin: 20px 0;
+        }
+
+        .btn-full {
+            width: 100%;
+            margin-top: 18px;
+            padding: 12px;
+            border: none;
+            border-radius: var(--radius-md);
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-strong) 100%);
+            color: #fff;
+            font-family: "Space Grotesk", sans-serif;
+            font-weight: 700;
+            font-size: 15px;
+            cursor: pointer;
+            box-shadow: 0 10px 20px rgba(10, 109, 149, 0.28);
+            transition: all 0.2s;
+        }
+
+        .btn-full:hover { transform: translateY(-1px); filter: brightness(1.06); }
+        .btn-full:active { transform: translateY(0); }
+
+        .auth-footer {
+            margin-top: 18px;
+            text-align: center;
+            font-size: 13px;
+            color: var(--ink-500);
+        }
+
+        .auth-footer a {
+            color: var(--primary-strong);
+            font-weight: 700;
+            text-decoration: none;
+        }
+
+        .auth-footer a:hover { text-decoration: underline; }
+
+        .flash {
+            padding: 11px 13px;
+            border-radius: var(--radius-md);
+            margin-bottom: 16px;
+            border: 1px solid transparent;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .flash.success { background: #e9fff3; border-color: #95ddb2; color: #0e5d2b; }
+        .flash.error { background: #fff0f0; border-color: #f1a6a6; color: #9c1c1c; }
+        .flash.warning { background: #fff8ea; border-color: #efc77f; color: #8a5d00; }
+
+        .remember-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 14px;
+        }
+
+        .remember-row input { width: auto; }
+        .remember-row label { margin: 0; font-size: 13px; color: var(--ink-700); }
+
+        footer {
+            padding: 16px;
+            text-align: center;
+            color: var(--ink-500);
+            font-size: 12px;
+            border-top: 1px solid var(--line);
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <div class="nav-wrap">
+        <a class="brand" href="{{ url_for('auth.landing') }}">
+            <span class="brand-mark">gF</span>
+            <span class="brand-text">
+                <span class="brand-title">goflori</span>
+                <span class="brand-sub">Flori kuemmert sich um DevOps</span>
+            </span>
+        </a>
+        {% block nav_link %}
+        <a class="nav-link" href="{{ url_for('auth.landing') }}">← Zurück zur Startseite</a>
+        {% endblock %}
+    </div>
+</header>
+
+<main>
+    <div class="auth-card">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="flash {{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </div>
+</main>
+
+<footer>goflori · Flori kuemmert sich um DevOps</footer>
+
+</body>
+</html>

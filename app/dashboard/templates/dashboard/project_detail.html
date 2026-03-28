@@ -3,379 +3,323 @@
 {% block title %}Projekt {{ project.name }} | Dashboard{% endblock %}
 
 {% block content %}
+{% set project_status_class = 'status-' ~ project.status if project.status in ['pending', 'running', 'success', 'failed'] else 'status-unknown' %}
+<style>
+    .project-shell { display: grid; gap: 16px; }
+    .project-head { display: grid; gap: 12px; }
+    .project-head-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+    .project-meta { display: flex; gap: 8px; flex-wrap: wrap; }
+    .overview-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 10px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+    }
+    .overview-item {
+        padding: 12px;
+        border-radius: 14px;
+        border: 1px solid rgba(141, 169, 194, 0.5);
+        background: rgba(255, 255, 255, 0.72);
+    }
+    .overview-item strong {
+        display: block;
+        font-size: 12px;
+        color: var(--ink-500);
+        margin-bottom: 4px;
+    }
+    .section-stack { display: grid; gap: 14px; }
+    .section-title { margin-bottom: 6px; }
+    .section-subtitle { margin: 0 0 10px; color: var(--ink-500); font-size: 13px; }
+    .action-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .soft-panel {
+        border: 1px solid rgba(141, 169, 194, 0.45);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.58);
+        padding: 14px;
+        margin-top: 12px;
+    }
+    .mono-scroll { max-height: 280px; overflow: auto; }
+    .dense-table th,
+    .dense-table td { font-size: 13px; padding: 8px 9px; }
+    .danger-note {
+        border-color: #efc4c4;
+        background: rgba(255, 243, 243, 0.92);
+    }
+    .details-stack { display: grid; gap: 10px; }
+    .inline-form { display: inline; }
+    @media (max-width: 720px) {
+        .project-head-top {
+            align-items: stretch;
+        }
+        .action-row {
+            flex-direction: column;
+            align-items: stretch;
+        }
+        .action-row form,
+        .action-row button,
+        .inline-form {
+            width: 100%;
+        }
+    }
+</style>
+
 <p><a href="{{ url_for('dashboard.projects') }}">Zurueck zur Projektliste</a></p>
 
-<div class="card hero">
-    <h2>{{ project.name }}</h2>
-    <p>
-        Richte dein Projekt hier in einem Schritt ein und veroeffentliche es danach direkt.
-        goflori erkennt wichtige Einstellungen automatisch und nutzt Standardwerte fuer die Infrastruktur.
-    </p>
-    <div style="margin-bottom: 10px;">
-        {% set project_status_class = 'status-' ~ project.status if project.status in ['pending', 'running', 'success', 'failed'] else 'status-unknown' %}
-        <span class="badge {{ project_status_class }}">{{ project.status }}</span>
-        <span class="pill">Slug: {{ project.slug }}</span>
-        <span class="pill">Standard: {{ effective_server_type }} / {{ effective_location }} / {{ effective_image }}</span>
-    </div>
-    <ul class="checklist">
-        <li>Code-Quelle verbunden: {{ 'ja' if quickstart_state.has_repository else 'nein' }}</li>
-        <li>App-Einstellungen gesetzt: {{ 'ja' if quickstart_state.has_env else 'optional, aktuell leer' }}</li>
-        <li>Domain gesetzt: {{ project.domain or 'optional, aktuell leer' }}</li>
-    </ul>
-    {% if not quickstart_state.has_repository %}
-        <div class="inline-note">Fuer einen echten App-Deploy solltest du zuerst den Repository-Link hinterlegen.</div>
-    {% endif %}
-    <div class="flori-tip">
-        <div class="flori-avatar">F</div>
-        <div>
-            <strong>Flori Hinweis:</strong> Wenn ein Deploy fehlschlaegt, bekommst du unten eine automatische Analyse
-            plus "Fix Issue" Vorschlag, den du direkt ausfuehren kannst.
-        </div>
-    </div>
-</div>
-
-<div class="card">
-    <h3>Flori Console</h3>
-    <p class="muted">Naechste sinnvolle Schritte fuer den aktuellen Projektstatus.</p>
-
-    {% if project.status in ['draft', 'pending'] %}
-        <div class="inline-note">
-            <strong>Status: {{ project.status }}</strong><br>
-            Dein Projekt ist vorbereitet. Jetzt geht es zum ersten Live-Deploy.
-        </div>
-        <ul class="checklist">
-            {% if not quickstart_state.has_repository %}
-                <li>Repository-Link setzen, damit goflori deinen Code deployen kann.</li>
-            {% endif %}
-            <li>Optional: App-Einstellungen als KEY=VALUE speichern (z. B. DATABASE_URL).</li>
-            <li>Auf "Jetzt veroeffentlichen" klicken.</li>
-        </ul>
-    {% elif project.status == 'running' %}
-        <div class="inline-note">
-            <strong>Status: running</strong><br>
-            Flori deployt gerade. Du musst nichts tun.
-        </div>
-        <ul class="checklist">
-            <li>Live-Status beobachten und auf den letzten Step achten.</li>
-            <li>Bei Fehlern erscheint automatisch eine Analyse + "Fix Issue".</li>
-            <li>Optional: Runtime-Logs fuer den Web-Container laden.</li>
-        </ul>
-    {% elif project.status in ['failed'] %}
-        <div class="inline-note" style="border-color:#f2a2a2;background:rgba(255,236,236,.8);">
-            <strong>Status: failed</strong><br>
-            Das letzte Deployment ist fehlgeschlagen, aber Flori hat bereits Handlungsvorschlaege.
-        </div>
-        <ul class="checklist">
-            <li>Bei betroffener Deployment-Zeile auf "Fix Issue" klicken.</li>
-            <li>Automatische Analyse lesen: Ursache + empfohlener Fix.</li>
-            <li>Wenn noetig: App-Einstellungen anpassen und Redeploy ausfuehren.</li>
-        </ul>
-    {% else %}
-        <div class="inline-note" style="border-color:#8ad6a8;background:rgba(230,250,239,.85);">
-            <strong>Status: {{ project.status }}</strong><br>
-            Projekt ist live. Perfekt fuer schnelle Iterationen.
-        </div>
-        <ul class="checklist">
-            <li>Bei Code-Aenderungen einfach "Redeploy" starten.</li>
-            <li>Falls Domain fehlt, jetzt verbinden und DNS prüfen.</li>
-            <li>Fuer neue Features zuerst lokal testen, dann erneut veroeffentlichen.</li>
-        </ul>
-    {% endif %}
-</div>
-
-<div class="row">
-    <div class="col">
-        <div class="card">
-            <h3>Schnellstart-Konfiguration</h3>
-            <form method="post" action="{{ url_for('dashboard.save_project_setup', project_id=project.id) }}">
-                <div class="grid-two">
-                    <div>
-                        <label for="domain">Domain (optional)</label>
-                        <input id="domain" name="domain" value="{{ project.domain or '' }}" placeholder="example.com">
-                    </div>
-                    <div>
-                        <label for="branch">Code-Branch</label>
-                        <input id="branch" name="branch" value="{{ project.repository.branch if project.repository and project.repository.branch else project.branch }}" placeholder="main">
-                    </div>
-                </div>
-
-                <label for="repo_url">Repository-Link</label>
-                <input id="repo_url" name="repo_url" value="{{ project.repository.repo_url if project.repository else '' }}" placeholder="https://github.com/org/repo.git">
-
-                <label for="env_lines">App-Einstellungen (optional, eine Zeile pro Eintrag)</label>
-                <textarea id="env_lines" name="env_lines" placeholder="DATABASE_URL=...&#10;API_TOKEN=...">{{ quickstart_env_lines }}</textarea>
-
-                <details>
-                    <summary>Erweiterte Repository-Optionen</summary>
-
-                    <label for="repo_access_token">Access Token (nur fuer private Repos)</label>
-                    <input id="repo_access_token" name="access_token" placeholder="Neu setzen; leer lassen = unveraendert" autocomplete="off">
-
-                    <label for="repo_provider">Provider (optional, wird sonst automatisch erkannt)</label>
-                    <input id="repo_provider" name="provider" value="{{ project.repository.provider if project.repository and project.repository.provider else '' }}" placeholder="github, gitlab, bitbucket">
-
-                    <label style="display:flex;align-items:center;gap:.5rem;margin-top:.5rem;">
-                        <input type="checkbox" name="is_private" value="1" {% if project.repository and project.repository.is_private %}checked{% endif %}>
-                        Repository ist privat
-                    </label>
-                </details>
-
-                <div class="actions">
-                    <button type="submit">Schnellstart speichern</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <div class="col">
-        <div class="card">
-            <h3>Veroeffentlichen</h3>
-            <p class="muted">
-                Ein Klick reicht. goflori verwendet automatisch den aktiven oder letzten Server und startet sonst einen neuen mit Standardwerten.
-            </p>
-            <form method="post" action="{{ url_for('dashboard.deploy_project', project_id=project.id) }}">
-                <div class="actions">
-                    <button type="submit">Jetzt veroeffentlichen</button>
-                    <button type="submit" form="redeploy-form" class="secondary">Redeploy</button>
-                </div>
-            </form>
-
-            <form id="redeploy-form" method="post" action="{{ url_for('dashboard.redeploy_project', project_id=project.id) }}"></form>
-
-            <div class="flori-tip">
-                <div class="flori-avatar">F</div>
+<div class="project-shell">
+    <div class="card hero">
+        <div class="project-head">
+            <div class="project-head-top">
                 <div>
-                    <strong>Empfehlung:</strong> Starte zuerst mit dem Ein-Klick-Deploy.
-                    Erweiterte Optionen nur verwenden, wenn du ein ganz konkretes Ziel brauchst.
+                    <h2>{{ project.name }}</h2>
+                    <p>
+                        Diese Detailseite ist bewusst linear aufgebaut: erst Status und Aktionen, dann Konfiguration,
+                        danach Betrieb und zuletzt Infrastruktur. Das ist robuster und besser scanbar.
+                    </p>
+                </div>
+                <div class="project-meta">
+                    <span class="badge {{ project_status_class }}">{{ project.status }}</span>
+                    <span class="pill">Slug: {{ project.slug }}</span>
                 </div>
             </div>
+
+            <ul class="overview-list">
+                <li class="overview-item"><strong>Repository</strong>{{ 'verbunden' if quickstart_state.has_repository else 'fehlt' }}</li>
+                <li class="overview-item"><strong>App-Einstellungen</strong>{{ 'gesetzt' if quickstart_state.has_env else 'leer' }}</li>
+                <li class="overview-item"><strong>Domain</strong>{{ project.domain or 'nicht gesetzt' }}</li>
+                <li class="overview-item"><strong>Aktiver Server</strong>{{ latest_server.name if latest_server else 'wird automatisch gewaehlt' }}</li>
+                <li class="overview-item"><strong>Branch</strong>{{ project.repository.branch if project.repository and project.repository.branch else project.branch }}</li>
+                <li class="overview-item"><strong>Framework</strong>{{ project.framework or 'automatisch' }}</li>
+            </ul>
+        </div>
+
+        {% if not quickstart_state.has_repository %}
+            <div class="inline-note">Fuer einen echten App-Deploy solltest du zuerst den Repository-Link hinterlegen.</div>
+        {% endif %}
+    </div>
+
+    <div class="card">
+        <h3 class="section-title">1. Deploy und aktueller Status</h3>
+        <p class="section-subtitle">Die wichtigsten Aktionen bleiben sichtbar. Erweiterte Optionen sind eingeklappt.</p>
+
+        <div class="action-row">
+            <form method="post" action="{{ url_for('dashboard.deploy_project', project_id=project.id) }}">
+                <button type="submit">Jetzt veroeffentlichen</button>
+            </form>
+            <form method="post" action="{{ url_for('dashboard.redeploy_project', project_id=project.id) }}">
+                <button type="submit" class="secondary">Redeploy</button>
+            </form>
+        </div>
+
+        <div class="soft-panel">
+            <table class="dense-table">
+                <tbody>
+                    <tr><th>Status</th><td><span class="badge {{ project_status_class }}">{{ project.status }}</span></td></tr>
+                    <tr><th>Repository</th><td>{{ project.repository.repo_url if project.repository else '-' }}</td></tr>
+                    <tr><th>Ziel-IP</th><td>{{ domain_target_ip or '-' }}</td></tr>
+                    <tr><th>Server</th><td>{{ latest_server.name if latest_server else 'wird automatisch angelegt' }}</td></tr>
+                    <tr><th>Standard</th><td>{{ effective_server_type }} / {{ effective_location }} / {{ effective_image }}</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="flori-tip">
+            <div class="flori-avatar">F</div>
+            <div>
+                <strong>Naechster sinnvoller Schritt:</strong>
+                {% if project.status in ['draft', 'pending'] %}
+                    {% if not quickstart_state.has_repository %}
+                        Zuerst Repository-Link setzen, dann direkt deployen.
+                    {% else %}
+                        Projekt ist vorbereitet. Jetzt den ersten Live-Deploy starten.
+                    {% endif %}
+                {% elif project.status == 'running' %}
+                    Deployment laeuft gerade. Runtime-Status und Logs findest du weiter unten.
+                {% elif project.status == 'failed' %}
+                    Letztes Deployment ist fehlgeschlagen. Pruefe die juengste Fehlermeldung im Deployment-Bereich.
+                {% else %}
+                    Projekt ist live. Fuer Code-Aenderungen reicht meist ein Redeploy.
+                {% endif %}
+            </div>
+        </div>
+
+        <details style="margin-top: 12px;">
+            <summary>Erweiterte Deploy-Optionen</summary>
+            <form method="post" action="{{ url_for('dashboard.deploy_project', project_id=project.id) }}">
+                <label for="server_id">Zielserver</label>
+                <select id="server_id" name="server_id">
+                    <option value="">Automatisch waehlen / neu provisionieren</option>
+                    {% for server in visible_servers|sort(attribute='created_at', reverse=true) %}
+                        <option value="{{ server.id }}">{{ server.name }} | {{ server.ipv4 or '-' }} | {{ server.status }}</option>
+                    {% endfor %}
+                </select>
+
+                <label for="mode">Mode</label>
+                <select id="mode" name="mode">
+                    <option value="production">production</option>
+                    <option value="staging">staging</option>
+                </select>
+
+                <label for="commit_sha">Commit SHA (optional)</label>
+                <input id="commit_sha" name="commit_sha" placeholder="abc123...">
+
+                <div class="actions">
+                    <button type="submit">Deploy mit Optionen starten</button>
+                </div>
+            </form>
+        </details>
+    </div>
+
+    <div class="card">
+        <h3 class="section-title">2. Schnellstart-Konfiguration</h3>
+        <p class="section-subtitle">Die haeufigsten Projektangaben in einem Formular. Seltene Optionen bleiben eingeklappt.</p>
+
+        <form method="post" action="{{ url_for('dashboard.save_project_setup', project_id=project.id) }}">
+            <div class="grid-two">
+                <div>
+                    <label for="domain">Domain (optional)</label>
+                    <input id="domain" name="domain" value="{{ project.domain or '' }}" placeholder="example.com">
+                </div>
+                <div>
+                    <label for="branch">Code-Branch</label>
+                    <input id="branch" name="branch" value="{{ project.repository.branch if project.repository and project.repository.branch else project.branch }}" placeholder="main">
+                </div>
+            </div>
+
+            <label for="repo_url">Repository-Link</label>
+            <input id="repo_url" name="repo_url" value="{{ project.repository.repo_url if project.repository else '' }}" placeholder="https://github.com/org/repo.git">
+
+            <label for="env_lines">App-Einstellungen (optional, eine Zeile pro Eintrag)</label>
+            <textarea id="env_lines" name="env_lines" placeholder="DATABASE_URL=...&#10;API_TOKEN=...">{{ quickstart_env_lines }}</textarea>
 
             <details>
-                <summary>Erweiterte Deploy-Optionen</summary>
-                <form method="post" action="{{ url_for('dashboard.deploy_project', project_id=project.id) }}">
-                    <label for="server_id">Zielserver</label>
-                    <select id="server_id" name="server_id">
-                        <option value="">Automatisch waehlen / neu provisionieren</option>
-                        {% for server in visible_servers|sort(attribute='created_at', reverse=true) %}
-                            <option value="{{ server.id }}">
-                                {{ server.name }} | {{ server.ipv4 or '-' }} | {{ server.status }}
-                            </option>
-                        {% endfor %}
-                    </select>
+                <summary>Erweiterte Repository-Optionen</summary>
 
-                    <label for="mode">Mode</label>
-                    <select id="mode" name="mode">
-                        <option value="production">production</option>
-                        <option value="staging">staging</option>
-                    </select>
+                <label for="repo_access_token">Access Token (nur fuer private Repos)</label>
+                <input id="repo_access_token" name="access_token" placeholder="Neu setzen; leer lassen = unveraendert" autocomplete="off">
 
-                    <label for="commit_sha">Commit SHA (optional)</label>
-                    <input id="commit_sha" name="commit_sha" placeholder="abc123...">
+                <label for="repo_provider">Provider (optional, wird sonst automatisch erkannt)</label>
+                <input id="repo_provider" name="provider" value="{{ project.repository.provider if project.repository and project.repository.provider else '' }}" placeholder="github, gitlab, bitbucket">
 
-                    <div class="actions">
-                        <button type="submit">Deploy mit Optionen starten</button>
-                    </div>
-                </form>
+                <label style="display:flex;align-items:center;gap:.5rem;margin-top:.5rem;">
+                    <input type="checkbox" name="is_private" value="1" {% if project.repository and project.repository.is_private %}checked{% endif %}>
+                    Repository ist privat
+                </label>
             </details>
-        </div>
 
-        <div class="card">
-            <h3>Projektstatus</h3>
-            <table>
-                <tbody>
-                    <tr><th>Framework</th><td>{{ project.framework or 'wird automatisch erkannt' }}</td></tr>
-                    <tr><th>Repository-Link</th><td>{{ project.repository.repo_url if project.repository else '-' }}</td></tr>
-                    <tr><th>Code-Branch</th><td>{{ project.repository.branch if project.repository else project.branch }}</td></tr>
-                    <tr><th>Server</th><td>{{ latest_server.name if latest_server else 'wird automatisch angelegt' }}</td></tr>
-                    <tr><th>Ziel-IP</th><td>{{ domain_target_ip or '-' }}</td></tr>
-                    <tr><th>Server Type</th><td>{{ effective_server_type }}</td></tr>
-                    <tr><th>Location</th><td>{{ effective_location }}</td></tr>
-                    <tr><th>Image</th><td>{{ effective_image }}</td></tr>
-                </tbody>
-            </table>
-            <p class="muted" style="margin-top: 10px;">
-                Diese Werte sind bereits deploybar. Du musst hier nichts manuell aufsetzen, um live zu gehen.
-            </p>
-        </div>
+            <div class="actions">
+                <button type="submit">Schnellstart speichern</button>
+            </div>
+        </form>
     </div>
-</div>
 
-<div class="card">
-    <details>
-        <summary>Erweiterte Infrastruktur und Server</summary>
+    <div class="card">
+        <h3 class="section-title">3. Betrieb und Runtime</h3>
+        <p class="section-subtitle">Containerstatus und Logs sind in einem klaren Laufzeitbereich gebuendelt.</p>
 
-        {% if latest_server %}
-            <table>
-                <tbody>
-                    <tr><th>Servername</th><td>{{ latest_server.name }}</td></tr>
-                    <tr><th>Provider</th><td>{{ latest_server.provider }}</td></tr>
-                    <tr><th>Server-IP</th><td>{{ latest_server.ipv4 or '-' }}</td></tr>
-                    <tr><th>Status</th><td>{{ latest_server.status }}</td></tr>
-                </tbody>
-            </table>
-        {% else %}
-            <p>Keine Serverdaten vorhanden.</p>
-        {% endif %}
+        <div class="details-stack">
+            <details open>
+                <summary>Container-Steuerung</summary>
+                <p class="muted">Status pruefen, Container neu starten oder gezielt loeschen.</p>
 
-        <h4>Projekt-Infrastruktur anpassen</h4>
-        <p class="muted">Nur noetig, wenn du die Standardwerte ueberschreiben willst.</p>
-        <form method="post" action="{{ url_for('dashboard.save_project_infrastructure', project_id=project.id) }}">
-            <label for="domain_cfg">Domain</label>
-            <input id="domain_cfg" name="domain" value="{{ project.domain or '' }}" placeholder="example.com">
-
-            <label for="desired_server_type_cfg">Server Type</label>
-            <input id="desired_server_type_cfg" name="desired_server_type" value="{{ project.desired_server_type or '' }}" placeholder="Standard: {{ hetzner_defaults.default_server_type }}">
-
-            <label for="desired_location_cfg">Location</label>
-            <input id="desired_location_cfg" name="desired_location" value="{{ project.desired_location or '' }}" placeholder="Standard: {{ hetzner_defaults.default_location }}">
-
-            <label for="desired_image_cfg">Image</label>
-            <input id="desired_image_cfg" name="desired_image" value="{{ project.desired_image or '' }}" placeholder="Standard: {{ hetzner_defaults.default_image }}">
-
-            <div class="actions">
-                <button type="submit">Infrastruktur speichern</button>
-            </div>
-        </form>
-
-        <h4>Zugeordnete Server</h4>
-        {% if visible_servers %}
-            <table>
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>Name</th>
-                        <th>Provider-ID</th>
-                        <th>IP</th>
-                        <th>Status</th>
-                        <th>Typ</th>
-                        <th>Location</th>
-                        <th>Aktion</th>
-                    </tr>
-                </thead>
-                <tbody>
+                <label for="container_server_id">Server</label>
+                <select id="container_server_id" name="server_id">
+                    <option value="">Automatisch (aktiver/letzter Projekt-Server)</option>
                     {% for server in visible_servers|sort(attribute='created_at', reverse=true) %}
-                        <tr>
-                            <td>{{ server.id }}</td>
-                            <td>
-                                {{ server.name }}
-                                {% if project.active_server_id == server.id %}
-                                    <span class="badge status-success">aktiv</span>
-                                {% endif %}
-                            </td>
-                            <td>{{ server.provider_server_id or '-' }}</td>
-                            <td>{{ server.ipv4 or '-' }}</td>
-                            <td>{{ server.status }}</td>
-                            <td>{{ server.server_type }}</td>
-                            <td>{{ server.region }}</td>
-                            <td>
-                                {% if project.active_server_id == server.id %}
-                                    <span class="badge status-success">Aktiv</span>
-                                {% else %}
-                                    <form method="post" action="{{ url_for('dashboard.activate_project_server', project_id=project.id, server_id=server.id) }}">
-                                        <button type="submit" class="secondary">Aktiv setzen</button>
-                                    </form>
-                                {% endif %}
-                            </td>
-                        </tr>
+                        <option value="{{ server.id }}">{{ server.name }} | {{ server.ipv4 or '-' }} | {{ server.status }}</option>
                     {% endfor %}
-                </tbody>
-            </table>
-        {% else %}
-            <p>Diesem Projekt ist noch kein Server zugeordnet.</p>
-        {% endif %}
-
-        <h4>Vorhandenen Hetzner-Server zuordnen</h4>
-        <form method="post" action="{{ url_for('dashboard.import_project_server', project_id=project.id) }}">
-            <label for="provider_server_id">Hetzner Server-ID</label>
-            <input id="provider_server_id" name="provider_server_id" placeholder="z. B. 123456789" required>
-
-            <div class="actions">
-                <button type="submit">Server laden und zuordnen</button>
-            </div>
-        </form>
-
-        <h4>Projekt vom Server entfernen</h4>
-        <p class="muted">
-            Entfernt Container, Volumes, Nginx-Site-Link und Deploy-Dateien unter /opt/orbital/{{ project.slug }}.
-        </p>
-        <form method="post" action="{{ url_for('dashboard.cleanup_project_server_artifacts', project_id=project.id) }}" onsubmit="return confirm('Projekt wirklich vom Server entfernen? Dieser Schritt kann nicht rueckgaengig gemacht werden.');">
-            <label for="cleanup_server_id">Zielserver fuer Cleanup</label>
-            <select id="cleanup_server_id" name="server_id">
-                <option value="">Automatisch (aktiver/letzter Projekt-Server)</option>
-                {% for server in visible_servers|sort(attribute='created_at', reverse=true) %}
-                    <option value="{{ server.id }}">
-                        {{ server.name }} | {{ server.ipv4 or '-' }} | {{ server.status }}
-                    </option>
-                {% endfor %}
-            </select>
-            <div class="actions">
-                <button type="submit" class="secondary">Projekt auf Server bereinigen</button>
-            </div>
-        </form>
-    </details>
-</div>
-
-<div class="row">
-    <div class="col">
-        <div class="card">
-            <h3>Server-Logs (Web-Container)</h3>
-            <p class="muted">Laedt die letzten 200 Zeilen aus docker-compose logs web direkt im Dashboard.</p>
-            <div class="actions" style="align-items: end;">
-                <div style="flex: 1; min-width: 240px;">
-                    <label for="runtime_log_server_id">Server</label>
-                    <select id="runtime_log_server_id">
-                        <option value="">Automatisch (aktiver/letzter Projekt-Server)</option>
-                        {% for server in visible_servers|sort(attribute='created_at', reverse=true) %}
-                            <option value="{{ server.id }}">{{ server.name }} | {{ server.ipv4 or '-' }} | {{ server.status }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <button type="button" class="secondary" id="load_runtime_logs_btn">Logs laden</button>
-            </div>
-            <p class="muted" id="runtime_log_meta">Noch keine Logs geladen.</p>
-            <pre id="runtime_logs_output">Noch keine Logs geladen.</pre>
-        </div>
-
-        <div class="card">
-            <h3>App-Einstellungen</h3>
-            {% if project.environment_variables %}
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Key</th>
-                            <th>Value</th>
-                            <th>Secret</th>
-                            <th>Aktion</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for item in project.environment_variables %}
-                            <tr>
-                                <td>{{ item.key }}</td>
-                                <td>{{ item.value }}</td>
-                                <td>{{ 'ja' if item.is_secret else 'nein' }}</td>
-                                <td>
-                                    <form method="post" action="{{ url_for('dashboard.delete_project_env', project_id=project.id, env_id=item.id) }}" onsubmit="return confirm('Variable wirklich loeschen?');">
-                                        <button type="submit" class="secondary">Loeschen</button>
-                                    </form>
-                                </td>
-                            </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            {% else %}
-                <p>Noch keine App-Einstellungen vorhanden.</p>
-            {% endif %}
-
-            <h4>Mehrere Variablen auf einmal speichern</h4>
-            <form method="post" action="{{ url_for('dashboard.add_project_env', project_id=project.id) }}">
-                <label for="env-bulk">Eine Zeile pro Variable: KEY=VALUE</label>
-                <textarea id="env-bulk" name="env_lines" placeholder="DATABASE_URL=...&#10;API_TOKEN=..."></textarea>
+                </select>
 
                 <div class="actions">
-                    <button type="submit">Variablen speichern</button>
+                    <button type="button" class="secondary" id="load_container_status_btn">Status laden</button>
+                    <form method="post" action="{{ url_for('dashboard.restart_project_container', project_id=project.id) }}" class="inline-form" id="container_restart_form">
+                        <input type="hidden" name="server_id" id="container_restart_server_id" value="">
+                        <button type="submit" class="secondary">Container neu starten</button>
+                    </form>
+                    <form method="post" action="{{ url_for('dashboard.delete_project_container', project_id=project.id) }}" class="inline-form" id="container_delete_form" onsubmit="return confirm('Container wirklich stoppen und loeschen?');">
+                        <input type="hidden" name="server_id" id="container_delete_server_id" value="">
+                        <button type="submit" class="secondary">Container loeschen</button>
+                    </form>
                 </div>
-            </form>
+
+                <p class="muted" id="container_status_meta">Noch kein Container-Status geladen.</p>
+                <pre id="container_status_output" class="mono-scroll">Noch kein Container-Status geladen.</pre>
+            </details>
+
+            <details>
+                <summary>Server-Logs (Web-Container)</summary>
+                <p class="muted">Laedt die letzten 200 Zeilen aus docker-compose logs web direkt im Dashboard.</p>
+
+                <label for="runtime_log_server_id">Server</label>
+                <select id="runtime_log_server_id">
+                    <option value="">Automatisch (aktiver/letzter Projekt-Server)</option>
+                    {% for server in visible_servers|sort(attribute='created_at', reverse=true) %}
+                        <option value="{{ server.id }}">{{ server.name }} | {{ server.ipv4 or '-' }} | {{ server.status }}</option>
+                    {% endfor %}
+                </select>
+
+                <div class="actions">
+                    <button type="button" class="secondary" id="load_runtime_logs_btn">Logs laden</button>
+                </div>
+
+                <p class="muted" id="runtime_log_meta">Noch keine Logs geladen.</p>
+                <pre id="runtime_logs_output" class="mono-scroll">Noch keine Logs geladen.</pre>
+            </details>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3 class="section-title">4. App-Einstellungen</h3>
+        <p class="section-subtitle">Bulk-Edit zuerst, bestehende Variablen und Einzelerstellung nur bei Bedarf.</p>
+
+        <form method="post" action="{{ url_for('dashboard.add_project_env', project_id=project.id) }}">
+            <label for="env-bulk">Eine Zeile pro Variable: KEY=VALUE</label>
+            <textarea id="env-bulk" name="env_lines" placeholder="DATABASE_URL=...&#10;API_TOKEN=..."></textarea>
+
+            <div class="actions">
+                <button type="submit">Variablen speichern</button>
+            </div>
+        </form>
+
+        <div class="details-stack">
+            <details>
+                <summary>Vorhandene Variablen anzeigen</summary>
+                {% if project.environment_variables %}
+                    <table class="dense-table">
+                        <thead>
+                            <tr>
+                                <th>Key</th>
+                                <th>Value</th>
+                                <th>Secret</th>
+                                <th>Aktion</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in project.environment_variables %}
+                                <tr>
+                                    <td>{{ item.key }}</td>
+                                    <td>{{ item.value }}</td>
+                                    <td>{{ 'ja' if item.is_secret else 'nein' }}</td>
+                                    <td>
+                                        <form method="post" action="{{ url_for('dashboard.delete_project_env', project_id=project.id, env_id=item.id) }}" onsubmit="return confirm('Variable wirklich loeschen?');">
+                                            <button type="submit" class="secondary">Loeschen</button>
+                                        </form>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <p>Noch keine App-Einstellungen vorhanden.</p>
+                {% endif %}
+            </details>
 
             <details>
                 <summary>Einzelne Variable anlegen</summary>
@@ -394,12 +338,70 @@
         </div>
     </div>
 
-    <div class="col">
-        <div class="card">
-            <h3>Deployments</h3>
-            <h4>Letzte erfolgreiche Deployments</h4>
+    <div class="card">
+        <h3 class="section-title">5. Deployments</h3>
+        <p class="section-subtitle">Juengste Deployments direkt sichtbar, historische Details nur aufklappen.</p>
+
+        {% if deployments %}
+            <table class="dense-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Status</th>
+                        <th>Aktualisiert</th>
+                        <th>Zielmaschine</th>
+                        <th>Fehler</th>
+                        <th>Aktion</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for deployment in deployments %}
+                        {% set meta = deployment_meta.get(deployment.id, {}) %}
+                        <tr>
+                            <td><a href="{{ url_for('dashboard.deployment_detail', deployment_id=deployment.id) }}">{{ deployment.id }}</a></td>
+                            <td>
+                                {% set deployment_status_class = 'status-' ~ deployment.status if deployment.status in ['pending', 'running', 'success', 'failed'] else 'status-unknown' %}
+                                <span class="badge {{ deployment_status_class }}">{{ deployment.status }}</span>
+                            </td>
+                            <td>{{ deployment.updated_at }}</td>
+                            <td>
+                                {% if meta.get('target_machine') %}
+                                    {{ meta.get('target_machine').name }}<br>
+                                    <span class="muted">{{ meta.get('target_machine').ipv4 or '-' }}</span>
+                                {% else %}
+                                    <span class="muted">-</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if meta.get('last_error') %}
+                                    <div class="error-box"><pre>{{ meta.get('last_error') }}</pre></div>
+                                {% else %}
+                                    <span class="muted">-</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if deployment.status == 'failed' %}
+                                    {% set fix_suggestion = meta.get('fix_suggestion') %}
+                                    <form method="post" action="{{ url_for('dashboard.fix_deployment_issue', deployment_id=deployment.id) }}">
+                                        <input type="hidden" name="action" value="{{ fix_suggestion.action if fix_suggestion else 'redeploy' }}">
+                                        <button type="submit">Fix Issue</button>
+                                    </form>
+                                {% else %}
+                                    <span class="muted">-</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p>Keine Deployments vorhanden.</p>
+        {% endif %}
+
+        <details style="margin-top: 12px;">
+            <summary>Letzte erfolgreiche Deployments</summary>
             {% if successful_deployments %}
-                <table>
+                <table class="dense-table">
                     <thead>
                         <tr>
                             <th>Deployment ID</th>
@@ -424,92 +426,204 @@
             {% else %}
                 <p>Noch keine erfolgreichen Deployments vorhanden.</p>
             {% endif %}
+        </details>
+    </div>
 
-            {% if deployments %}
-                <table>
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>Status</th>
-                            <th>Erstellt</th>
-                            <th>Aktualisiert</th>
-                            <th>Zielmaschine</th>
-                            <th>Steps</th>
-                            <th>Fehlgeschlagene Steps</th>
-                            <th>Letzte Fehlermeldung</th>
-                            <th>Aktion</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for deployment in deployments %}
-                            {% set meta = deployment_meta.get(deployment.id, {}) %}
+    <div class="card">
+        <h3 class="section-title">6. Infrastruktur und Server</h3>
+        <p class="section-subtitle">Seltener benoetigte Infrastrukturthemen sind gesammelt und eingeklappt.</p>
+
+        {% if latest_server %}
+            <table class="dense-table">
+                <tbody>
+                    <tr><th>Servername</th><td>{{ latest_server.name }}</td></tr>
+                    <tr><th>Provider</th><td>{{ latest_server.provider }}</td></tr>
+                    <tr><th>Server-IP</th><td>{{ latest_server.ipv4 or '-' }}</td></tr>
+                    <tr><th>Status</th><td>{{ latest_server.status }}</td></tr>
+                </tbody>
+            </table>
+        {% else %}
+            <p>Keine Serverdaten vorhanden.</p>
+        {% endif %}
+
+        <div class="details-stack">
+            <details>
+                <summary>Projekt-Infrastruktur anpassen</summary>
+                <form method="post" action="{{ url_for('dashboard.save_project_infrastructure', project_id=project.id) }}">
+                    <label for="domain_cfg">Domain</label>
+                    <input id="domain_cfg" name="domain" value="{{ project.domain or '' }}" placeholder="example.com">
+
+                    <label for="desired_server_type_cfg">Server Type</label>
+                    <input id="desired_server_type_cfg" name="desired_server_type" value="{{ project.desired_server_type or '' }}" placeholder="Standard: {{ hetzner_defaults.default_server_type }}">
+
+                    <label for="desired_location_cfg">Location</label>
+                    <input id="desired_location_cfg" name="desired_location" value="{{ project.desired_location or '' }}" placeholder="Standard: {{ hetzner_defaults.default_location }}">
+
+                    <label for="desired_image_cfg">Image</label>
+                    <input id="desired_image_cfg" name="desired_image" value="{{ project.desired_image or '' }}" placeholder="Standard: {{ hetzner_defaults.default_image }}">
+
+                    <div class="actions">
+                        <button type="submit">Infrastruktur speichern</button>
+                    </div>
+                </form>
+            </details>
+
+            <details>
+                <summary>Zugeordnete Server</summary>
+                {% if visible_servers %}
+                    <table class="dense-table">
+                        <thead>
                             <tr>
-                                <td><a href="{{ url_for('dashboard.deployment_detail', deployment_id=deployment.id) }}">{{ deployment.id }}</a></td>
-                                <td>
-                                    {% set deployment_status_class = 'status-' ~ deployment.status if deployment.status in ['pending', 'running', 'success', 'failed'] else 'status-unknown' %}
-                                    <span class="badge {{ deployment_status_class }}">{{ deployment.status }}</span>
-                                </td>
-                                <td>{{ deployment.created_at }}</td>
-                                <td>{{ deployment.updated_at }}</td>
-                                <td>
-                                    {% if meta.get('target_machine') %}
-                                        {{ meta.get('target_machine').name }}
-                                        <br>
-                                        <span class="muted">{{ meta.get('target_machine').provider }} | {{ meta.get('target_machine').ipv4 or '-' }}</span>
-                                    {% else %}
-                                        <span class="muted">-</span>
-                                    {% endif %}
-                                </td>
-                                <td>{{ meta.get('steps_count', 0) }}</td>
-                                <td>
-                                    {% set failed_count = meta.get('failed_steps_count', 0) %}
-                                    {% if failed_count > 0 %}
-                                        <span class="badge status-failed">{{ failed_count }}</span>
-                                    {% else %}
-                                        <span class="badge status-success">0</span>
-                                    {% endif %}
-                                </td>
-                                <td>
-                                    {% if meta.get('last_error') %}
-                                        <div class="error-box"><pre>{{ meta.get('last_error') }}</pre></div>
-                                        {% if meta.get('error_analysis') %}
-                                            <div class="inline-note">
-                                                <strong>{{ meta.get('error_analysis').get('error_type', '-') }}</strong><br>
-                                                Ursache: {{ meta.get('error_analysis').get('probable_cause', '-') }}<br>
-                                                Fix: {{ meta.get('error_analysis').get('suggested_fix', '-') }}
-                                            </div>
-                                        {% endif %}
-                                    {% else %}
-                                        <span class="muted">-</span>
-                                    {% endif %}
-                                </td>
-                                <td>
-                                    {% if deployment.status == 'failed' %}
-                                        {% set fix_suggestion = meta.get('fix_suggestion') %}
-                                        <form method="post" action="{{ url_for('dashboard.fix_deployment_issue', deployment_id=deployment.id) }}">
-                                            <input type="hidden" name="action" value="{{ fix_suggestion.action if fix_suggestion else 'redeploy' }}">
-                                            <button type="submit">Fix Issue</button>
-                                        </form>
-                                        {% if fix_suggestion %}
-                                            <span class="muted">{{ fix_suggestion.label }}</span>
-                                        {% endif %}
-                                    {% else %}
-                                        <span class="muted">-</span>
-                                    {% endif %}
-                                </td>
+                                <th>ID</th>
+                                <th>Name</th>
+                                <th>IP</th>
+                                <th>Status</th>
+                                <th>Typ</th>
+                                <th>Location</th>
+                                <th>Aktion</th>
                             </tr>
+                        </thead>
+                        <tbody>
+                            {% for server in visible_servers|sort(attribute='created_at', reverse=true) %}
+                                <tr>
+                                    <td>{{ server.id }}</td>
+                                    <td>
+                                        {{ server.name }}
+                                        {% if project.active_server_id == server.id %}
+                                            <span class="badge status-success">aktiv</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ server.ipv4 or '-' }}</td>
+                                    <td>{{ server.status }}</td>
+                                    <td>{{ server.server_type }}</td>
+                                    <td>{{ server.region }}</td>
+                                    <td>
+                                        {% if project.active_server_id == server.id %}
+                                            <span class="badge status-success">Aktiv</span>
+                                        {% else %}
+                                            <form method="post" action="{{ url_for('dashboard.activate_project_server', project_id=project.id, server_id=server.id) }}">
+                                                <button type="submit" class="secondary">Aktiv setzen</button>
+                                            </form>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <p>Diesem Projekt ist noch kein Server zugeordnet.</p>
+                {% endif %}
+            </details>
+
+            <details>
+                <summary>Vorhandenen Hetzner-Server zuordnen</summary>
+                <form method="post" action="{{ url_for('dashboard.import_project_server', project_id=project.id) }}">
+                    <label for="provider_server_id">Hetzner Server-ID</label>
+                    <input id="provider_server_id" name="provider_server_id" placeholder="z. B. 123456789" required>
+
+                    <div class="actions">
+                        <button type="submit">Server laden und zuordnen</button>
+                    </div>
+                </form>
+            </details>
+
+            <details class="danger-note">
+                <summary>Projekt vom Server entfernen</summary>
+                <p class="muted">
+                    Entfernt Container, Volumes, Nginx-Site-Link und Deploy-Dateien unter /opt/orbital/{{ project.slug }}.
+                </p>
+                <form method="post" action="{{ url_for('dashboard.cleanup_project_server_artifacts', project_id=project.id) }}" onsubmit="return confirm('Projekt wirklich vom Server entfernen? Dieser Schritt kann nicht rueckgaengig gemacht werden.');">
+                    <label for="cleanup_server_id">Zielserver fuer Cleanup</label>
+                    <select id="cleanup_server_id" name="server_id">
+                        <option value="">Automatisch (aktiver/letzter Projekt-Server)</option>
+                        {% for server in visible_servers|sort(attribute='created_at', reverse=true) %}
+                            <option value="{{ server.id }}">{{ server.name }} | {{ server.ipv4 or '-' }} | {{ server.status }}</option>
                         {% endfor %}
-                    </tbody>
-                </table>
-            {% else %}
-                <p>Keine Deployments vorhanden.</p>
-            {% endif %}
+                    </select>
+                    <div class="actions">
+                        <button type="submit" class="secondary">Projekt auf Server bereinigen</button>
+                    </div>
+                </form>
+            </details>
         </div>
     </div>
 </div>
 
 <script>
 (() => {
+    const containerStatusButton = document.getElementById("load_container_status_btn");
+    const containerServerSelect = document.getElementById("container_server_id");
+    const containerStatusOutput = document.getElementById("container_status_output");
+    const containerStatusMeta = document.getElementById("container_status_meta");
+    const restartServerInput = document.getElementById("container_restart_server_id");
+    const deleteServerInput = document.getElementById("container_delete_server_id");
+    const containerStatusUrl = "{{ url_for('dashboard.project_container_status', project_id=project.id) }}";
+
+    const syncContainerForms = () => {
+        const selected = containerServerSelect ? containerServerSelect.value : "";
+        if (restartServerInput) {
+            restartServerInput.value = selected;
+        }
+        if (deleteServerInput) {
+            deleteServerInput.value = selected;
+        }
+    };
+
+    if (containerServerSelect) {
+        containerServerSelect.addEventListener("change", syncContainerForms);
+    }
+    syncContainerForms();
+
+    if (containerStatusButton && containerServerSelect && containerStatusOutput && containerStatusMeta) {
+        const setContainerLoading = (isLoading) => {
+            containerStatusButton.disabled = isLoading;
+            containerStatusButton.textContent = isLoading ? "Laedt..." : "Status laden";
+        };
+
+        containerStatusButton.addEventListener("click", async () => {
+            setContainerLoading(true);
+            try {
+                const serverId = containerServerSelect.value;
+                const url = serverId ? containerStatusUrl + "?server_id=" + encodeURIComponent(serverId) : containerStatusUrl;
+                const response = await fetch(url, { cache: "no-store" });
+                const data = await response.json();
+
+                if (!response.ok) {
+                    containerStatusMeta.textContent = "Fehler beim Laden des Container-Status";
+                    containerStatusOutput.textContent = data.error || "Unbekannter Fehler";
+                    return;
+                }
+
+                const metaParts = [];
+                metaParts.push("Server: " + data.server.name + " (" + data.server.ipv4 + ")");
+                metaParts.push("status: " + data.status);
+                metaParts.push("fetched_at: " + data.fetched_at);
+                containerStatusMeta.textContent = metaParts.join(" | ");
+
+                const sections = [];
+                if (data.container) {
+                    sections.push("container_id: " + (data.container.id || "-"));
+                    sections.push("container_name: " + (data.container.name || "-"));
+                    sections.push("container_status: " + (data.container.status || "-"));
+                    sections.push("ports: " + (data.container.ports || "-"));
+                } else {
+                    sections.push("Kein Web-Container gefunden.");
+                }
+                sections.push("\ncommand: " + (data.command || "-"));
+                sections.push("exit_code: " + String(data.exit_code));
+                if (data.stderr) {
+                    sections.push("\nstderr:\n" + data.stderr);
+                }
+                containerStatusOutput.textContent = sections.join("\n");
+            } catch (err) {
+                containerStatusMeta.textContent = "Fehler beim Laden des Container-Status";
+                containerStatusOutput.textContent = String(err);
+            } finally {
+                setContainerLoading(false);
+            }
+        });
+    }
+
     const button = document.getElementById("load_runtime_logs_btn");
     const serverSelect = document.getElementById("runtime_log_server_id");
     const output = document.getElementById("runtime_logs_output");

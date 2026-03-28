@@ -8,6 +8,7 @@ class Project(TimestampMixin, db.Model):
     __tablename__ = "projects"
 
     id = db.Column(db.Integer, primary_key=True)
+    company_id = db.Column(db.Integer, db.ForeignKey("companies.id"), nullable=True)
     name = db.Column(db.String(255), nullable=False)
     slug = db.Column(db.String(255), unique=True, nullable=False)
     framework = db.Column(db.String(50), nullable=True)
@@ -33,6 +34,7 @@ class Project(TimestampMixin, db.Model):
         "EnvironmentVariable", back_populates="project", cascade="all, delete-orphan"
     )
     activity_logs = db.relationship("ActivityLog", back_populates="project", cascade="all, delete-orphan")
+    company = db.relationship("Company", back_populates="projects")
 
     @staticmethod
     def slugify(value: str) -> str:

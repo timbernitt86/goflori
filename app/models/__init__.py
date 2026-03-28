@@ -1,3 +1,4 @@
+from .company import Company
 from .user import User
 from .project import Project
 from .repository import Repository
@@ -9,6 +10,7 @@ from .activity_log import ActivityLog
 from .provider_setting import ProviderSetting
 
 __all__ = [
+    "Company",
     "User",
     "Project",
     "Repository",

@@ -1,0 +1,72 @@
+{% extends "auth/base.html" %}
+
+{% block title %}Registrieren | goflori{% endblock %}
+
+{% block content %}
+<h1>Konto erstellen</h1>
+<p class="subtitle">Firma anlegen und direkt loslegen. Dauert 30 Sekunden.</p>
+
+<form method="post" action="{{ url_for('auth.register_post') }}">
+
+    <label for="company_name">Firmenname *</label>
+    <input
+        id="company_name"
+        name="company_name"
+        type="text"
+        required
+        placeholder="Mein Startup GmbH"
+        value="{{ (form_data and form_data.company_name) or '' }}"
+    >
+
+    <hr class="divider">
+
+    <label for="name">Dein Name *</label>
+    <input
+        id="name"
+        name="name"
+        type="text"
+        required
+        autocomplete="name"
+        placeholder="Max Mustermann"
+        value="{{ (form_data and form_data.name) or '' }}"
+    >
+
+    <label for="email">E-Mail-Adresse *</label>
+    <input
+        id="email"
+        name="email"
+        type="email"
+        required
+        autocomplete="email"
+        placeholder="max@firma.com"
+        value="{{ (form_data and form_data.email) or '' }}"
+    >
+
+    <label for="password">Passwort *</label>
+    <input
+        id="password"
+        name="password"
+        type="password"
+        required
+        autocomplete="new-password"
+        placeholder="Mindestens 8 Zeichen"
+    >
+
+    <label for="password_confirm">Passwort bestätigen *</label>
+    <input
+        id="password_confirm"
+        name="password_confirm"
+        type="password"
+        required
+        autocomplete="new-password"
+        placeholder="••••••••"
+    >
+
+    <button type="submit" class="btn-full">Firma &amp; Konto anlegen</button>
+</form>
+
+<div class="auth-footer">
+    Bereits registriert?
+    <a href="{{ url_for('auth.login') }}">Einloggen</a>
+</div>
+{% endblock %}

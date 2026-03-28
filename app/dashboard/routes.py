@@ -6,6 +6,7 @@ from uuid import uuid4
 import requests.exceptions
 import redis
 from flask import abort, current_app, flash, jsonify, redirect, render_template, request, url_for
+from flask_login import current_user, login_required
 from flask_migrate import upgrade as migrate_upgrade
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -208,6 +209,24 @@ def _format_command_results(results) -> str:
     return "\n".join(lines).rstrip("-\n")
 
 
+def _resolve_selected_project_server(project: Project, selected_server_id: str | None) -> tuple[Server | None, str | None]:
+    selected_server = None
+    selected_server_id = (selected_server_id or "").strip()
+
+    if selected_server_id:
+        try:
+            selected_server = Server.query.filter_by(project_id=project.id, id=int(selected_server_id)).first()
+        except ValueError:
+            selected_server = None
+        if selected_server is None:
+            return None, "Ausgewaehlter Zielserver wurde nicht gefunden."
+
+    target_server = selected_server or _resolve_target_server(project)
+    if target_server is None or not target_server.ipv4:
+        return None, "Kein Zielserver mit gueltiger IP gefunden."
+    return target_server, None
+
+
 def _resolve_target_server(project: Project, deployment: Deployment | None = None) -> Server | None:
     """Resolve target machine for a deployment.
 
@@ -400,6 +419,12 @@ def _apply_hetzner_settings_from_form(setting: ProviderSetting) -> None:
         setting.ssh_private_key = ssh_private_key
 
 
+@bp.before_request
+@login_required
+def require_login():
+    pass
+
+
 @bp.get("/")
 def dashboard_home():
     return redirect(url_for("dashboard.projects"))
@@ -554,7 +579,10 @@ def projects():
             db.session.query(Deployment.project_id, func.count(Deployment.id)).group_by(Deployment.project_id).all()
         )
         projects_data = (
-            Project.query.options(joinedload(Project.repository)).order_by(Project.created_at.desc()).all()
+            Project.query.options(joinedload(Project.repository))
+            .filter_by(company_id=current_user.company_id)
+            .order_by(Project.created_at.desc())
+            .all()
         )
     except Exception as exc:
         logger.exception("Failed to load projects dashboard data. Trying DB migration recovery: %s", exc)
@@ -565,7 +593,10 @@ def projects():
                 db.session.query(Deployment.project_id, func.count(Deployment.id)).group_by(Deployment.project_id).all()
             )
             projects_data = (
-                Project.query.options(joinedload(Project.repository)).order_by(Project.created_at.desc()).all()
+                Project.query.options(joinedload(Project.repository))
+                .filter_by(company_id=current_user.company_id)
+                .order_by(Project.created_at.desc())
+                .all()
             )
             flash("Datenbank wurde aktualisiert. Dashboard-Daten wurden neu geladen.", "warning")
         except Exception as recovery_exc:
@@ -610,6 +641,7 @@ def create_project():
 
     final_slug = _generate_unique_project_slug(name=name, requested_slug=slug)
     project = Project(
+        company_id=current_user.company_id,
         name=name,
         slug=final_slug,
         framework=framework,
@@ -1124,19 +1156,9 @@ def project_runtime_logs(project_id: int):
     if not project:
         abort(404)
 
-    selected_server_id = (request.args.get("server_id") or "").strip()
-    selected_server = None
-    if selected_server_id:
-        try:
-            selected_server = Server.query.filter_by(project_id=project.id, id=int(selected_server_id)).first()
-        except ValueError:
-            selected_server = None
-        if selected_server is None:
-            return jsonify({"error": "Ausgewaehlter Zielserver wurde nicht gefunden."}), 400
-
-    target_server = selected_server or _resolve_target_server(project)
-    if target_server is None or not target_server.ipv4:
-        return jsonify({"error": "Kein Zielserver mit gueltiger IP gefunden."}), 400
+    target_server, error_message = _resolve_selected_project_server(project, request.args.get("server_id"))
+    if error_message:
+        return jsonify({"error": error_message}), 400
 
     deploy_dir = f"/opt/orbital/{project.slug}"
     command = f"docker-compose -f {deploy_dir}/docker-compose.yml logs --tail=200 web"
@@ -1159,6 +1181,160 @@ def project_runtime_logs(project_id: int):
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
     return jsonify(payload), (200 if result.return_code == 0 else 500)
+
+
+@bp.get("/projects/<int:project_id>/container-status")
+def project_container_status(project_id: int):
+    project = Project.query.options(
+        joinedload(Project.servers),
+        joinedload(Project.active_server),
+    ).filter_by(id=project_id).first()
+    if not project:
+        abort(404)
+
+    target_server, error_message = _resolve_selected_project_server(project, request.args.get("server_id"))
+    if error_message:
+        return jsonify({"error": error_message}), 400
+
+    deploy_dir = f"/opt/orbital/{project.slug}"
+    compose_file = f"{deploy_dir}/docker-compose.yml"
+    executor = DeploymentExecutor()
+
+    id_cmd = f"docker-compose -f {compose_file} ps -q web"
+    id_result = executor.ssh.run_one(target_server.ipv4, id_cmd)
+    container_id = (id_result.stdout or "").strip()
+
+    if id_result.return_code != 0:
+        payload = {
+            "project_id": project.id,
+            "project_slug": project.slug,
+            "server": {
+                "id": target_server.id,
+                "name": target_server.name,
+                "ipv4": target_server.ipv4,
+            },
+            "status": "error",
+            "container": None,
+            "command": id_result.command,
+            "exit_code": id_result.return_code,
+            "stdout": id_result.stdout,
+            "stderr": id_result.stderr,
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return jsonify(payload), 500
+
+    if not container_id:
+        payload = {
+            "project_id": project.id,
+            "project_slug": project.slug,
+            "server": {
+                "id": target_server.id,
+                "name": target_server.name,
+                "ipv4": target_server.ipv4,
+            },
+            "status": "not_found",
+            "container": None,
+            "command": id_result.command,
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return jsonify(payload), 200
+
+    inspect_cmd = (
+        f"docker ps -a --filter id={container_id} "
+        "--format \"{{.ID}}\\t{{.Names}}\\t{{.Status}}\\t{{.Ports}}\""
+    )
+    inspect_result = executor.ssh.run_one(target_server.ipv4, inspect_cmd)
+    raw = (inspect_result.stdout or "").strip()
+    columns = raw.split("\t") if raw else []
+    container_name = columns[1] if len(columns) > 1 else f"{project.slug}-web"
+    container_status_text = columns[2] if len(columns) > 2 else "unknown"
+    container_ports = columns[3] if len(columns) > 3 else ""
+    running = container_status_text.lower().startswith("up")
+
+    payload = {
+        "project_id": project.id,
+        "project_slug": project.slug,
+        "server": {
+            "id": target_server.id,
+            "name": target_server.name,
+            "ipv4": target_server.ipv4,
+        },
+        "status": "running" if running else "stopped",
+        "container": {
+            "id": container_id,
+            "name": container_name,
+            "status": container_status_text,
+            "ports": container_ports,
+        },
+        "command": inspect_result.command,
+        "exit_code": inspect_result.return_code,
+        "stdout": inspect_result.stdout,
+        "stderr": inspect_result.stderr,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return jsonify(payload), (200 if inspect_result.return_code == 0 else 500)
+
+
+@bp.post("/projects/<int:project_id>/container-restart")
+def restart_project_container(project_id: int):
+    project = Project.query.options(
+        joinedload(Project.servers),
+        joinedload(Project.active_server),
+    ).filter_by(id=project_id).first()
+    if not project:
+        abort(404)
+
+    target_server, error_message = _resolve_selected_project_server(project, request.form.get("server_id"))
+    if error_message:
+        flash(error_message, "error")
+        return redirect(url_for("dashboard.project_detail", project_id=project.id))
+
+    deploy_dir = f"/opt/orbital/{project.slug}"
+    command = f"docker-compose -f {deploy_dir}/docker-compose.yml restart web"
+    result = DeploymentExecutor().ssh.run_one(target_server.ipv4, command)
+
+    if result.return_code == 0:
+        flash("Web-Container wurde neu gestartet.", "success")
+    else:
+        flash(
+            "Container-Neustart fehlgeschlagen: "
+            f"{(result.stderr or '').strip() or (result.stdout or '').strip() or '-'}",
+            "error",
+        )
+    return redirect(url_for("dashboard.project_detail", project_id=project.id))
+
+
+@bp.post("/projects/<int:project_id>/container-delete")
+def delete_project_container(project_id: int):
+    project = Project.query.options(
+        joinedload(Project.servers),
+        joinedload(Project.active_server),
+    ).filter_by(id=project_id).first()
+    if not project:
+        abort(404)
+
+    target_server, error_message = _resolve_selected_project_server(project, request.form.get("server_id"))
+    if error_message:
+        flash(error_message, "error")
+        return redirect(url_for("dashboard.project_detail", project_id=project.id))
+
+    deploy_dir = f"/opt/orbital/{project.slug}"
+    commands = [
+        f"docker-compose -f {deploy_dir}/docker-compose.yml stop web",
+        f"docker-compose -f {deploy_dir}/docker-compose.yml rm -f -s web",
+    ]
+    results = DeploymentExecutor().ssh.run_many(target_server.ipv4, commands)
+    failed = [item for item in results if item.return_code != 0]
+
+    if not failed:
+        flash("Web-Container wurde gestoppt und geloescht.", "success")
+    else:
+        detail = "; ".join((item.stderr or item.stdout or item.command).strip() for item in failed)
+        flash(f"Container-Loeschen fehlgeschlagen: {detail}", "error")
+    return redirect(url_for("dashboard.project_detail", project_id=project.id))
 
 
 @bp.get("/deployments/<int:deployment_id>")

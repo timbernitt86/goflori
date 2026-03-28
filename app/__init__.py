@@ -2,9 +2,10 @@ from flask import Flask, redirect, url_for
 from flask_migrate import upgrade
 
 from app.config import Config
-from app.extensions import db, migrate
+from app.extensions import db, login_manager, migrate
 from app.api import register_blueprints
 from app.dashboard import bp as dashboard_bp
+from app.auth import bp as auth_bp
 from app.tasks import init_celery
 
 
@@ -33,17 +34,26 @@ def create_app(config_class=Config):
 
     db.init_app(app)
     migrate.init_app(app, db)
+    login_manager.init_app(app)
     init_celery(app)
     register_blueprints(app)
     app.register_blueprint(dashboard_bp)
+    app.register_blueprint(auth_bp)
 
     # Import models so SQLAlchemy metadata is registered for Flask-Migrate.
     from app import models  # noqa: F401
+
+    # Flask-Login user loader
+    from app.models.user import User
+
+    @login_manager.user_loader
+    def load_user(user_id: str):
+        return User.query.get(int(user_id))
 
     _maybe_upgrade_database(app)
 
     @app.get("/")
     def index():
-        return redirect(url_for("dashboard.projects"))
+        return redirect(url_for("auth.landing"))
 
     return app
