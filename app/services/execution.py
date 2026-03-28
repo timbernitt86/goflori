@@ -123,13 +123,22 @@ class DeploymentExecutor:
                 )
             )
         else:
-            # Nur Fallback-App erzeugen, wenn kein echtes Repository vorliegt und nur im repo/-Verzeichnis
-            fallback_files = [
-                f"cat <<'EOF' > {repo_snapshot_dir}/app.py\nfrom flask import Flask\napp = Flask(__name__)\n\n@app.get('/')\ndef index():\n    return 'Orbital fallback app is running'\nEOF",
-                f"cat <<'EOF' > {repo_snapshot_dir}/requirements.txt\nflask\ngunicorn\nEOF",
-            ]
-            fallback_results = self.ssh.run_many(host, fallback_files)
-            results.extend(fallback_results)
+            # Fallback-App NUR im repo/-Verzeichnis erzeugen, niemals in /app oder anderen Verzeichnissen!
+            if repo_snapshot_dir.rstrip("/").endswith("/repo"):
+                fallback_files = [
+                    f"cat <<'EOF' > {repo_snapshot_dir}/app.py\nfrom flask import Flask\napp = Flask(__name__)\n\n@app.get('/')\ndef index():\n    return 'Orbital fallback app is running'\nEOF",
+                    f"cat <<'EOF' > {repo_snapshot_dir}/requirements.txt\nflask\ngunicorn\nEOF",
+                ]
+                fallback_results = self.ssh.run_many(host, fallback_files)
+                results.extend(fallback_results)
+            else:
+                # Niemals Fallback-App außerhalb von repo/-Verzeichnis erzeugen!
+                results.append(CommandResult(
+                    command=f"SKIP fallback app creation: repo_snapshot_dir={repo_snapshot_dir}",
+                    return_code=0,
+                    stdout="Fallback app creation skipped (invalid target dir)",
+                    stderr="",
+                ))
 
         env_content, env_meta = self._render_env_file(ctx)
         self.ssh.upload_text(host, f"{deploy_dir}/docker-compose.yml", rendered.compose)
