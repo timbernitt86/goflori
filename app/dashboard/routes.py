@@ -1,6 +1,7 @@
 import logging
 import threading
 from datetime import datetime, timezone
+from uuid import uuid4
 
 import requests.exceptions
 from flask import abort, current_app, flash, jsonify, redirect, render_template, request, url_for
@@ -266,6 +267,19 @@ def _upsert_project_environment(project: Project, raw_value: str) -> dict[str, i
 
 def _project_env_lines(project: Project) -> str:
     return "\n".join(f"{item.key}={item.value}" for item in sorted(project.environment_variables, key=lambda env: env.key))
+
+
+def _generate_unique_project_slug(name: str, requested_slug: str | None = None) -> str:
+    base_slug = (requested_slug or "").strip() or Project.slugify(name)
+    if not base_slug:
+        base_slug = f"projekt-{uuid4().hex[:6]}"
+
+    candidate = base_slug
+    suffix = 2
+    while Project.query.filter_by(slug=candidate).first() is not None:
+        candidate = f"{base_slug}-{suffix}"
+        suffix += 1
+    return candidate
 
 
 def _extract_error_analysis(step: DeploymentStep | None) -> dict | None:
@@ -544,7 +558,7 @@ def create_project():
         flash("Projektname ist erforderlich.", "error")
         return redirect(url_for("dashboard.projects"))
 
-    final_slug = slug or Project.slugify(name)
+    final_slug = _generate_unique_project_slug(name=name, requested_slug=slug)
     project = Project(
         name=name,
         slug=final_slug,
@@ -571,9 +585,14 @@ def create_project():
     db.session.add(project)
     try:
         db.session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.session.rollback()
-        flash("Projekt konnte nicht erstellt werden (Slug vermutlich bereits vergeben).", "error")
+        raw_error = str(getattr(exc, "orig", exc)).lower()
+        if "projects.slug" in raw_error or "unique constraint failed: projects.slug" in raw_error:
+            flash("Projekt konnte nicht erstellt werden, obwohl ein eindeutiger Slug erzeugt wurde. Bitte erneut versuchen.", "error")
+        else:
+            flash("Projekt konnte wegen eines Datenbankkonflikts nicht erstellt werden. Bitte Eingaben pruefen.", "error")
+        logger.exception("Project creation failed with integrity error for name=%s slug=%s", name, final_slug)
         return redirect(url_for("dashboard.projects"))
 
     if create_action == "create_and_deploy":
