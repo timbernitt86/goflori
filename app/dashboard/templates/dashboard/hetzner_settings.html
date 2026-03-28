@@ -74,6 +74,16 @@
                     {% endif %}
                 </td>
             </tr>
+            <tr>
+                <th>SSH Private Key</th>
+                <td>
+                    {% if ssh_private_key_configured %}
+                        <span class="badge status-success">gesetzt ✓ – Orbital kann sich auf Servern einloggen</span>
+                    {% else %}
+                        <span class="badge status-failed">nicht gesetzt – Deployments auf echten Servern werden blockiert</span>
+                    {% endif %}
+                </td>
+            </tr>
         </tbody>
     </table>
 
@@ -317,6 +327,39 @@
                 <strong>Leer lassen</strong> = der gespeicherte Schlüssel bleibt erhalten.
                 Aus Sicherheitsgründen wird ein gespeicherter Schlüssel beim Laden der Seite nicht erneut angezeigt.
                 Niemals den <em>privaten</em> Schlüssel eintragen!
+            </p>
+        </div>
+
+        <div class="field-group">
+            <label for="ssh_private_key">
+                <span class="step-badge">7</span>
+                SSH Private Key
+                {% if not ssh_private_key_configured %}
+                    <span class="badge status-failed" style="margin-left:6px;">erforderlich für Live-Deployments</span>
+                {% else %}
+                    <span class="badge status-success" style="margin-left:6px;">gesetzt</span>
+                {% endif %}
+            </label>
+            <textarea
+                id="ssh_private_key"
+                name="ssh_private_key"
+                placeholder="{% if ssh_private_key_configured %}Bereits gespeichert — leer lassen, um ihn beizubehalten{% else %}-----BEGIN OPENSSH PRIVATE KEY-----
+...
+-----END OPENSSH PRIVATE KEY-----{% endif %}"
+                rows="6"
+                style="font-family: monospace; font-size: 0.82rem;"
+            ></textarea>
+            <p class="help-text">
+                <strong>Das ist der „Hausschlüssel" für deine Server.</strong>
+                Ohne ihn kann Orbital keine automatischen Deployments auf echten Servern durchführen.<br><br>
+                <strong>Wo findest du ihn?</strong><br>
+                Auf deinem Computer in der Datei <code>~/.ssh/id_rsa</code> oder <code>~/.ssh/id_ed25519</code>
+                (ohne <code>.pub</code> am Ende). Den Inhalt komplett kopieren – von
+                <code>-----BEGIN ... KEY-----</code> bis <code>-----END ... KEY-----</code>.<br><br>
+                <strong>Welcher Key?</strong> Derselbe, zu dem du in Hetzner den Public Key hinterlegt hast.<br><br>
+                <strong>Sicherheit:</strong> Der Schlüssel wird verschlüsselt in deiner Datenbank gespeichert
+                und wird nach dem Speichern nicht mehr angezeigt.
+                <strong>Leer lassen</strong> = der gespeicherte Schlüssel bleibt erhalten.
             </p>
         </div>
 

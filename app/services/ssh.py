@@ -1,19 +1,19 @@
 import logging
 import os
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 import paramiko
-from flask import current_app
+from flask import current_app, has_app_context
 
 logger = logging.getLogger(__name__)
 
 # Allowlist of permitted command prefixes.
 # Only commands whose stripped text starts with one of these prefixes may be
-# executed on a remote host. Extend this list deliberately — never use a
-# catch-all wildcard.
+# executed on a remote host. Extend this list deliberately and avoid wildcards.
 ALLOWED_COMMAND_PREFIXES: tuple[str, ...] = (
     "apt-get update",
     "apt-get install",
@@ -74,6 +74,20 @@ class SSHExecutor:
         self.dry_run = current_app.config.get("ORBITAL_DRY_RUN", True)
         self.ssh_key_path: str = current_app.config.get("ORBITAL_SSH_KEY_PATH", "")
         self.ssh_user: str = current_app.config.get("ORBITAL_SSH_USER", "root")
+        self._key_material: str = current_app.config.get("ORBITAL_SSH_PRIVATE_KEY", "") or self._db_private_key()
+        self._generated_key_path: str | None = None
+
+    @staticmethod
+    def _db_private_key() -> str:
+        """Return private key stored in Hetzner ProviderSetting, if any."""
+        if not has_app_context():
+            return ""
+        try:
+            from app.models import ProviderSetting
+            setting = ProviderSetting.query.filter_by(provider_name="hetzner").first()
+            return (setting.ssh_private_key if setting else "") or ""
+        except Exception:
+            return ""
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -84,26 +98,62 @@ class SSHExecutor:
         if not any(stripped.startswith(prefix) for prefix in ALLOWED_COMMAND_PREFIXES):
             raise CommandNotAllowedError(f"Command not in SSH allowlist: {stripped!r}")
 
+    def _ensure_embedded_key_file(self) -> str | None:
+        if self._generated_key_path:
+            return self._generated_key_path
+
+        key_material = (self._key_material or "").strip()
+        if not key_material:
+            return None
+
+        key_material = key_material.replace("\\n", "\n")
+        key_path = os.path.join(tempfile.gettempdir(), "orbital_ssh_key.pem")
+        with open(key_path, "w", encoding="utf-8") as handle:
+            handle.write(key_material)
+            if not key_material.endswith("\n"):
+                handle.write("\n")
+
+        try:
+            os.chmod(key_path, 0o600)
+        except OSError:
+            # Best effort on platforms where chmod is limited.
+            pass
+
+        self._generated_key_path = key_path
+        return self._generated_key_path
+
+    def _resolve_key_path(self) -> str:
+        if self.ssh_key_path:
+            return self.ssh_key_path
+
+        generated = self._ensure_embedded_key_file()
+        if generated:
+            self.ssh_key_path = generated
+            return self.ssh_key_path
+
+        raise RuntimeError(
+            "Live SSH requires ORBITAL_SSH_KEY_PATH or ORBITAL_SSH_PRIVATE_KEY. "
+            "Alternatively enable ORBITAL_DRY_RUN=true for local simulation."
+        )
+
     def _connect(self, host: str) -> paramiko.SSHClient:
-        if not self.ssh_key_path:
-            raise ValueError("ORBITAL_SSH_KEY_PATH must be configured for live SSH execution")
+        key_path = self._resolve_key_path()
 
         client = paramiko.SSHClient()
         # Newly provisioned servers have no prior known_hosts entry.
-        # AutoAddPolicy accepts and persists the key on first connection;
-        # the fingerprint is logged so any unexpected change is auditable.
+        # AutoAddPolicy accepts and persists the key on first connection.
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         client.connect(
             hostname=host,
             port=self.SSH_PORT,
             username=self.ssh_user,
-            key_filename=self.ssh_key_path,
+            key_filename=key_path,
             timeout=self.CONNECT_TIMEOUT,
             look_for_keys=False,
             allow_agent=False,
         )
         host_key = client.get_transport().get_remote_server_key()
-        logger.info("SSH connected to %s — host key %s %s", host, host_key.get_name(), host_key.get_base64())
+        logger.info("SSH connected to %s; host key %s %s", host, host_key.get_name(), host_key.get_base64())
         return client
 
     def _exec(self, client: paramiko.SSHClient, command: str) -> CommandResult:
@@ -193,10 +243,7 @@ class SSHExecutor:
             client.close()
 
     def upload_text(self, host: str, remote_path: str, content: str) -> None:
-        """Upload a text file via SFTP without embedding file content into shell commands.
-
-        This keeps sensitive values (for example .env secrets) out of command logs.
-        """
+        """Upload a text file via SFTP without embedding file content into shell commands."""
         if self.dry_run:
             logger.info("DRY RUN upload text file -> %s on %s", remote_path, host)
             return

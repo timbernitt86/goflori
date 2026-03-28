@@ -13,6 +13,7 @@ class ProviderSetting(TimestampMixin, db.Model):
     default_image = db.Column(db.String(255), nullable=True)
     ssh_key_name = db.Column(db.String(255), nullable=True)
     ssh_public_key = db.Column(db.Text, nullable=True)
+    ssh_private_key = db.Column(db.Text, nullable=True)
 
     def to_dict(self, include_secrets: bool = False):
         return {
@@ -26,6 +27,7 @@ class ProviderSetting(TimestampMixin, db.Model):
             "ssh_key_name": self.ssh_key_name,
             "ssh_public_key": self.ssh_public_key if include_secrets else None,
             "ssh_public_key_configured": bool(self.ssh_public_key),
+            "ssh_private_key_configured": bool(self.ssh_private_key),
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }

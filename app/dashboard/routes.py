@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 import requests.exceptions
+import redis
 from flask import abort, current_app, flash, jsonify, redirect, render_template, request, url_for
 from flask_migrate import upgrade as migrate_upgrade
 from sqlalchemy import func
@@ -28,12 +29,46 @@ SECRET_ENV_SUFFIXES = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 
 def _is_task_queue_usable() -> tuple[bool, str | None]:
     broker_url = ((current_app.config.get("CELERY") or {}).get("broker_url") or "").strip()
-    if broker_url.startswith("redis://"):
+    if broker_url.startswith("redis://") or broker_url.startswith("rediss://"):
         try:
-            import redis  # noqa: F401
+            client = redis.Redis.from_url(
+                broker_url,
+                socket_connect_timeout=1,
+                socket_timeout=1,
+                retry_on_timeout=False,
+            )
+            client.ping()
         except Exception as exc:
-            return False, f"redis client missing in current interpreter: {exc}"
+            return False, f"redis backend unreachable for task queue: {exc}"
     return True, None
+
+
+def _deployment_preflight_error() -> str | None:
+    if current_app.config.get("ORBITAL_DRY_RUN", True):
+        return None
+
+    key_path = (current_app.config.get("ORBITAL_SSH_KEY_PATH") or "").strip()
+    key_material = (current_app.config.get("ORBITAL_SSH_PRIVATE_KEY") or "").strip()
+    if key_path or key_material:
+        return None
+
+    # Also accept the private key stored in the dashboard's Hetzner settings.
+    setting = ProviderSetting.query.filter_by(provider_name="hetzner").first()
+    if setting and setting.ssh_private_key:
+        return None
+
+    has_hetzner_pubkey = bool((setting.ssh_key_name if setting else None) or (setting.ssh_public_key if setting else None))
+    if has_hetzner_pubkey:
+        return (
+            "Fast fertig: Du hast einen SSH-Key in den Hetzner-Einstellungen hinterlegt, "
+            "aber Orbital braucht noch den passenden Private Key. "
+            "Bitte trage ihn in den Hetzner-Einstellungen unter 'SSH Private Key' ein."
+        )
+
+    return (
+        "Live-Deployment nicht moeglich: Bitte trage einen SSH Private Key in den "
+        "Hetzner-Einstellungen ein (oder aktiviere ORBITAL_DRY_RUN=true fuer Simulation)."
+    )
 
 
 def _is_mock_server(server: Server | None) -> bool:
@@ -72,6 +107,12 @@ def _create_and_queue_deployment(
     commit_sha: str | None,
     trigger_source: str,
 ) -> tuple[Deployment | None, bool]:
+    preflight_error = _deployment_preflight_error()
+    if preflight_error:
+        logger.warning("Deployment preflight blocked for project id=%s: %s", project.id, preflight_error)
+        flash(preflight_error, "error")
+        return None, False
+
     deployment: Deployment | None = None
 
     try:
@@ -337,6 +378,7 @@ def _apply_hetzner_settings_from_form(setting: ProviderSetting) -> None:
     default_image = (request.form.get("default_image") or "").strip() or None
     ssh_key_name = (request.form.get("ssh_key_name") or "").strip() or None
     ssh_public_key = (request.form.get("ssh_public_key") or "").strip() or None
+    ssh_private_key = (request.form.get("ssh_private_key") or "").strip() or None
 
     # Keep existing token when field is intentionally left empty.
     if api_token:
@@ -346,9 +388,11 @@ def _apply_hetzner_settings_from_form(setting: ProviderSetting) -> None:
     setting.default_server_type = default_server_type
     setting.default_image = default_image
     setting.ssh_key_name = ssh_key_name
-    # Keep existing public key when field is intentionally left empty.
+    # Keep existing keys when fields are intentionally left empty.
     if ssh_public_key:
         setting.ssh_public_key = ssh_public_key
+    if ssh_private_key:
+        setting.ssh_private_key = ssh_private_key
 
 
 @bp.get("/")
@@ -417,6 +461,7 @@ def hetzner_settings():
         setting=setting,
         token_configured=bool(setting.api_token),
         ssh_public_key_configured=bool(setting.ssh_public_key),
+        ssh_private_key_configured=bool(setting.ssh_private_key),
         resources=resources,
         resource_errors=resource_errors,
     )
