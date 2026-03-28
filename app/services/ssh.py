@@ -1,6 +1,8 @@
 import logging
+import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable
 
 import paramiko
@@ -29,6 +31,7 @@ ALLOWED_COMMAND_PREFIXES: tuple[str, ...] = (
     "test -f /opt/orbital/",
     "ln -sf /opt/orbital/",
     "rm -f /etc/nginx/sites-enabled/default",
+    "rm -f /etc/nginx/sites-enabled/",
     "nginx -t",
     "certbot --nginx",
     "curl -s http://127.0.0.1:",
@@ -141,6 +144,94 @@ class SSHExecutor:
             return [self._exec(client, cmd) for cmd in command_list]
         finally:
             client.close()
+
+    def upload_directory(
+        self,
+        host: str,
+        local_dir: str,
+        remote_dir: str,
+        *,
+        exclude_dir_names: set[str] | None = None,
+        exclude_file_names: set[str] | None = None,
+    ) -> None:
+        if self.dry_run:
+            logger.info("DRY RUN upload directory %s -> %s on %s", local_dir, remote_dir, host)
+            return
+
+        source = Path(local_dir)
+        if not source.exists() or not source.is_dir():
+            raise ValueError(f"Local directory does not exist: {local_dir}")
+
+        excluded_dirs = exclude_dir_names or set()
+        excluded_files = exclude_file_names or set()
+
+        client = self._connect(host)
+        try:
+            sftp = client.open_sftp()
+            try:
+                self._mkdir_p_sftp(sftp, remote_dir)
+                for root, dirs, files in os.walk(source):
+                    dirs[:] = [dirname for dirname in dirs if dirname not in excluded_dirs]
+
+                    rel_path = os.path.relpath(root, str(source))
+                    rel_path = "" if rel_path == "." else rel_path.replace("\\", "/")
+                    current_remote = remote_dir if not rel_path else f"{remote_dir}/{rel_path}"
+                    self._mkdir_p_sftp(sftp, current_remote)
+
+                    for dirname in dirs:
+                        self._mkdir_p_sftp(sftp, f"{current_remote}/{dirname}")
+
+                    for filename in files:
+                        if filename in excluded_files:
+                            continue
+                        local_file = os.path.join(root, filename)
+                        remote_file = f"{current_remote}/{filename}"
+                        sftp.put(local_file, remote_file)
+            finally:
+                sftp.close()
+        finally:
+            client.close()
+
+    def upload_text(self, host: str, remote_path: str, content: str) -> None:
+        """Upload a text file via SFTP without embedding file content into shell commands.
+
+        This keeps sensitive values (for example .env secrets) out of command logs.
+        """
+        if self.dry_run:
+            logger.info("DRY RUN upload text file -> %s on %s", remote_path, host)
+            return
+
+        client = self._connect(host)
+        try:
+            sftp = client.open_sftp()
+            try:
+                parent = str(Path(remote_path).parent).replace("\\", "/")
+                if parent and parent != ".":
+                    self._mkdir_p_sftp(sftp, parent)
+                with sftp.file(remote_path, "w") as remote_file:
+                    remote_file.write(content)
+            finally:
+                sftp.close()
+        finally:
+            client.close()
+
+    def _mkdir_p_sftp(self, sftp: paramiko.SFTPClient, remote_path: str) -> None:
+        parts = [part for part in remote_path.split("/") if part]
+        if remote_path.startswith("/"):
+            current = "/"
+        else:
+            current = ""
+
+        for part in parts:
+            if current in {"", "/"}:
+                next_path = f"/{part}" if current == "/" else part
+            else:
+                next_path = f"{current}/{part}"
+            try:
+                sftp.stat(next_path)
+            except FileNotFoundError:
+                sftp.mkdir(next_path)
+            current = next_path
 
     def wait_until_reachable(
         self,

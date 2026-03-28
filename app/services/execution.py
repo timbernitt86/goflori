@@ -1,8 +1,8 @@
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.services.hetzner import HetznerClient
-from app.services.ssh import SSHExecutor
+from app.services.ssh import CommandResult, SSHExecutor
 from app.services.templating import DeploymentTemplateService, RenderedDeploymentFiles
 
 
@@ -14,6 +14,11 @@ class PipelineContext:
     domain: str | None
     repository_url: str | None = None
     repository_branch: str = "main"
+    local_repository_path: str | None = None
+    deployment_mode: str = "repository"
+    project_environment: str = "production"
+    env_values: dict[str, str] = field(default_factory=dict)
+    env_secret_keys: set[str] = field(default_factory=set)
     server_type: str = "cx22"
     region: str = "nbg1"
     app_port: int = 8000
@@ -47,30 +52,120 @@ class DeploymentExecutor:
         ]
         return self.ssh.run_many(host, commands)
 
-    def render_files(self, ctx: PipelineContext):
+    def render_artifacts_from_repo(self, ctx: PipelineContext):
         return self.templates.render(
             framework=ctx.framework,
             app_name=ctx.slug,
             domain=ctx.domain,
             app_port=ctx.app_port,
+            local_repository_path=ctx.local_repository_path,
+            build_source_dir="repo",
         )
 
-    def upload_and_deploy(self, host: str, ctx: PipelineContext, rendered: RenderedDeploymentFiles):
-        if not ctx.repository_url:
-            raise ValueError("Repository URL fehlt. Bitte im Projekt eine Repository URL konfigurieren.")
+    def _render_env_file(self, ctx: PipelineContext) -> tuple[str, dict]:
+        """Build .env content from project variables.
 
-        branch = (ctx.repository_branch or "main").strip() or "main"
+        Project variables from the dashboard are the source of truth. We add
+        a small set of defaults if they are not explicitly configured.
+        """
+        merged: dict[str, str] = dict(ctx.env_values)
+        merged.setdefault("ORBITAL_PROJECT_NAME", ctx.project_name)
+        merged.setdefault("ORBITAL_PROJECT_SLUG", ctx.slug)
+        merged.setdefault("ORBITAL_ENV", ctx.project_environment)
+        merged.setdefault("PORT", str(ctx.app_port))
+
+        lines = [f"{key}={value}" for key, value in sorted(merged.items())]
+        content = "\n".join(lines) + "\n"
+        meta = {
+            "env_key_count": len(merged),
+            "env_keys": sorted(merged.keys()),
+            "secret_key_count": len(ctx.env_secret_keys),
+            "secret_keys": sorted(ctx.env_secret_keys),
+        }
+        return content, meta
+
+    def upload_artifacts(self, host: str, ctx: PipelineContext, rendered: RenderedDeploymentFiles):
+        deploy_dir = f"/opt/orbital/{ctx.slug}"
+        repo_snapshot_dir = f"{deploy_dir}/repo"
+        results: list[CommandResult] = []
+        results.append(self.ssh.run_one(host, f"rm -rf {deploy_dir}"))
+        results.append(self.ssh.run_one(host, f"mkdir -p {deploy_dir}"))
+        results.append(self.ssh.run_one(host, f"mkdir -p {repo_snapshot_dir}"))
+
+        if ctx.local_repository_path:
+            self.ssh.upload_directory(
+                host,
+                ctx.local_repository_path,
+                repo_snapshot_dir,
+                exclude_dir_names={
+                    ".git",
+                    ".venv",
+                    "venv",
+                    "node_modules",
+                    "__pycache__",
+                    ".pytest_cache",
+                    ".mypy_cache",
+                    ".ruff_cache",
+                    ".tox",
+                    ".idea",
+                    ".vscode",
+                },
+                exclude_file_names={
+                    ".DS_Store",
+                },
+            )
+            results.append(
+                CommandResult(
+                    command=f"upload_directory {ctx.local_repository_path} -> {repo_snapshot_dir}",
+                    return_code=0,
+                    stdout="Repository snapshot uploaded successfully",
+                    stderr="",
+                )
+            )
+        else:
+            fallback_files = [
+                f"cat <<'EOF' > {repo_snapshot_dir}/app.py\nfrom flask import Flask\napp = Flask(__name__)\n\n@app.get('/')\ndef index():\n    return 'Orbital fallback app is running'\nEOF",
+                f"cat <<'EOF' > {repo_snapshot_dir}/requirements.txt\nflask\ngunicorn\nEOF",
+            ]
+            fallback_results = self.ssh.run_many(host, fallback_files)
+            results.extend(fallback_results)
+
+        env_content, env_meta = self._render_env_file(ctx)
+        self.ssh.upload_text(host, f"{deploy_dir}/docker-compose.yml", rendered.compose)
+        self.ssh.upload_text(host, f"{deploy_dir}/Dockerfile", rendered.dockerfile)
+        self.ssh.upload_text(host, f"{deploy_dir}/nginx.conf", rendered.nginx_conf)
+        self.ssh.upload_text(host, f"{deploy_dir}/.env", env_content)
+
+        results.append(CommandResult(command=f"upload_text {deploy_dir}/docker-compose.yml", return_code=0, stdout="docker-compose artifact uploaded", stderr=""))
+        results.append(CommandResult(command=f"upload_text {deploy_dir}/Dockerfile", return_code=0, stdout="Dockerfile artifact uploaded", stderr=""))
+        results.append(CommandResult(command=f"upload_text {deploy_dir}/nginx.conf", return_code=0, stdout="nginx config artifact uploaded", stderr=""))
+        results.append(
+            CommandResult(
+                command=f"upload_text {deploy_dir}/.env",
+                return_code=0,
+                stdout=(
+                    f"env artifact uploaded (keys={env_meta['env_key_count']}, "
+                    f"secret_keys={env_meta['secret_key_count']})"
+                ),
+                stderr="",
+            )
+        )
+
+        commands = [
+            f"test -f {deploy_dir}/docker-compose.yml",
+            f"test -f {deploy_dir}/Dockerfile",
+            f"test -f {deploy_dir}/nginx.conf",
+            f"test -f {deploy_dir}/.env",
+        ]
+        results.extend(self.ssh.run_many(host, commands))
+        return results
+
+    def start_containers(self, host: str, ctx: PipelineContext):
         deploy_dir = f"/opt/orbital/{ctx.slug}"
         commands = [
-            f"rm -rf {deploy_dir}",
-            f"git clone --branch {branch} {ctx.repository_url} {deploy_dir}",
-            f"cat <<'EOF' > {deploy_dir}/docker-compose.yml\n{rendered.compose}EOF",
-            f"cat <<'EOF' > {deploy_dir}/Dockerfile\n{rendered.dockerfile}EOF",
-            f"cat <<'EOF' > {deploy_dir}/nginx.conf\n{rendered.nginx_conf}EOF",
-            f"cat <<'EOF' > {deploy_dir}/.env\nDEBUG=False\nEOF",
-            f"test -f {deploy_dir}/docker-compose.yml",
             f"docker-compose -f {deploy_dir}/docker-compose.yml down --remove-orphans",
             f"docker-compose -f {deploy_dir}/docker-compose.yml up -d --build --force-recreate",
+            f"docker-compose -f {deploy_dir}/docker-compose.yml exec -T web sh -lc 'flask --app run.py db upgrade || python -c \"from app import create_app; from app.extensions import db; app=create_app(); ctx=app.app_context(); ctx.push(); db.create_all(); ctx.pop()\"'",
         ]
         return self.ssh.run_many(host, commands)
 
@@ -115,6 +210,17 @@ class DeploymentExecutor:
         if not domain:
             return []
         commands = [f"curl -sS -I https://{domain}"]
+        return self.ssh.run_many(host, commands)
+
+    def cleanup_project_from_server(self, host: str, ctx: PipelineContext):
+        deploy_dir = f"/opt/orbital/{ctx.slug}"
+        commands = [
+            f"docker-compose -f {deploy_dir}/docker-compose.yml down --volumes --remove-orphans || true",
+            f"rm -f /etc/nginx/sites-enabled/{ctx.slug}.conf",
+            "nginx -t",
+            "systemctl reload nginx",
+            f"rm -rf {deploy_dir}",
+        ]
         return self.ssh.run_many(host, commands)
 
     def healthcheck(self, host: str, ctx: PipelineContext):

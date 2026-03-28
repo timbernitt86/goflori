@@ -31,9 +31,11 @@ def create_project():
     repo_url = data.get("repository_url")
     if repo_url:
         project.repository = Repository(
-            provider=data.get("repository_provider", "github"),
-            url=repo_url,
-            branch=project.branch,
+            provider=data.get("repository_provider"),
+            repo_url=repo_url,
+            branch=data.get("repository_branch", project.branch),
+            access_token=data.get("repository_access_token"),
+            is_private=bool(data.get("repository_is_private", False)),
         )
 
     for item in data.get("env", []):

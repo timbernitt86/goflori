@@ -22,11 +22,45 @@
                     <span class="badge {{ project_status_class }}">{{ project.status }}</span>
                 </td>
             </tr>
-            <tr><th>Repository</th><td>{{ project.repository.url if project.repository else '-' }}</td></tr>
+            <tr><th>Repository</th><td>{{ project.repository.repo_url if project.repository else '-' }}</td></tr>
+            <tr><th>Repo-Branch</th><td>{{ project.repository.branch if project.repository else '-' }}</td></tr>
+            <tr><th>Repo-Provider</th><td>{{ project.repository.provider if project.repository and project.repository.provider else '-' }}</td></tr>
+            <tr><th>Privates Repo</th><td>{{ 'ja' if project.repository and project.repository.is_private else 'nein' }}</td></tr>
+            <tr><th>Access Token</th><td>{{ 'gesetzt' if project.repository and project.repository.has_access_token else '-' }}</td></tr>
             <tr><th>Erstellt</th><td>{{ project.created_at }}</td></tr>
             <tr><th>Aktualisiert</th><td>{{ project.updated_at }}</td></tr>
         </tbody>
     </table>
+</div>
+
+<div class="card">
+    <h3>Repository verwalten</h3>
+    <p class="muted">
+        URL und Branch werden fuer Deployments genutzt. Leer gelassener Token ueberschreibt einen vorhandenen Token nicht.
+        Um die Repository-Verknuepfung zu entfernen, einfach die URL leer lassen und speichern.
+    </p>
+    <form method="post" action="{{ url_for('dashboard.save_project_repository', project_id=project.id) }}">
+        <label for="repo_url">Repository URL</label>
+        <input id="repo_url" name="repo_url" value="{{ project.repository.repo_url if project.repository else '' }}" placeholder="https://github.com/org/repo.git">
+
+        <label for="repo_branch">Branch</label>
+        <input id="repo_branch" name="branch" value="{{ project.repository.branch if project.repository and project.repository.branch else project.branch }}" placeholder="main">
+
+        <label for="repo_provider">Provider (optional)</label>
+        <input id="repo_provider" name="provider" value="{{ project.repository.provider if project.repository and project.repository.provider else '' }}" placeholder="github, gitlab, bitbucket, ...">
+
+        <label for="repo_access_token">Access Token (optional)</label>
+        <input id="repo_access_token" name="access_token" placeholder="Neu setzen; leer lassen = unveraendert" autocomplete="off">
+
+        <label style="display:flex;align-items:center;gap:.5rem;margin-top:.5rem;">
+            <input type="checkbox" name="is_private" value="1" {% if project.repository and project.repository.is_private %}checked{% endif %}>
+            Repository ist privat
+        </label>
+
+        <div class="actions">
+            <button type="submit">Repository speichern</button>
+        </div>
+    </form>
 </div>
 
 <div class="card">
@@ -59,7 +93,7 @@
     </table>
 
     <h4>Zugeordnete Server</h4>
-    {% if project.servers %}
+    {% if visible_servers %}
         <table>
             <thead>
                 <tr>
@@ -74,7 +108,7 @@
                 </tr>
             </thead>
             <tbody>
-                {% for server in project.servers|sort(attribute='created_at', reverse=true) %}
+                {% for server in visible_servers|sort(attribute='created_at', reverse=true) %}
                     <tr>
                         <td>{{ server.id }}</td>
                         <td>
@@ -155,11 +189,21 @@
 
 <div class="card">
     <h3>Deploy starten</h3>
+    <p class="muted">
+        Redeploy verwendet bevorzugt den bestehenden Projekt-Server und deployt bei hinterlegtem Repository den aktuellen Stand des Branches neu.
+    </p>
+    <form method="post" action="{{ url_for('dashboard.redeploy_project', project_id=project.id) }}" onsubmit="return confirm('Redeploy fuer dieses Projekt starten?');">
+        <div class="actions">
+            <button type="submit">Redeploy starten</button>
+        </div>
+    </form>
+
+    <h4>Individuellen Deploy starten</h4>
     <form method="post" action="{{ url_for('dashboard.deploy_project', project_id=project.id) }}">
         <label for="server_id">Zielserver</label>
         <select id="server_id" name="server_id">
             <option value="">Automatisch waehlen / neu provisionieren</option>
-            {% for server in project.servers|sort(attribute='created_at', reverse=true) %}
+            {% for server in visible_servers|sort(attribute='created_at', reverse=true) %}
                 <option value="{{ server.id }}">
                     {{ server.name }} | {{ server.ipv4 or '-' }} | {{ server.status }}
                 </option>
@@ -179,10 +223,49 @@
             <button type="submit">Deploy starten</button>
         </div>
     </form>
+
+    <h4>Projekt vom Server entfernen</h4>
+    <p class="muted">
+        Entfernt Container, Volumes, Nginx-Site-Link und Deploy-Dateien unter /opt/orbital/{{ project.slug }}.
+        Danach kannst du auf demselben Server ein neues Projekt deployen.
+    </p>
+    <form method="post" action="{{ url_for('dashboard.cleanup_project_server_artifacts', project_id=project.id) }}" onsubmit="return confirm('Projekt wirklich vom Server entfernen? Dieser Schritt kann nicht rueckgaengig gemacht werden.');">
+        <label for="cleanup_server_id">Zielserver fuer Cleanup</label>
+        <select id="cleanup_server_id" name="server_id">
+            <option value="">Automatisch (aktiver/letzter Projekt-Server)</option>
+            {% for server in visible_servers|sort(attribute='created_at', reverse=true) %}
+                <option value="{{ server.id }}">
+                    {{ server.name }} | {{ server.ipv4 or '-' }} | {{ server.status }}
+                </option>
+            {% endfor %}
+        </select>
+        <div class="actions">
+            <button type="submit" class="secondary">Projekt auf Server bereinigen</button>
+        </div>
+    </form>
 </div>
 
 <div class="row">
     <div class="col">
+        <div class="card">
+            <h3>Server-Logs (Web-Container)</h3>
+            <p class="muted">Laedt die letzten 200 Zeilen aus docker-compose logs web direkt im Dashboard.</p>
+            <div class="actions" style="align-items: end;">
+                <div style="flex: 1; min-width: 240px;">
+                    <label for="runtime_log_server_id">Server</label>
+                    <select id="runtime_log_server_id">
+                        <option value="">Automatisch (aktiver/letzter Projekt-Server)</option>
+                        {% for server in visible_servers|sort(attribute='created_at', reverse=true) %}
+                            <option value="{{ server.id }}">{{ server.name }} | {{ server.ipv4 or '-' }} | {{ server.status }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <button type="button" class="secondary" id="load_runtime_logs_btn">Logs laden</button>
+            </div>
+            <p class="muted" id="runtime_log_meta">Noch keine Logs geladen.</p>
+            <pre id="runtime_logs_output">Noch keine Logs geladen.</pre>
+        </div>
+
         <div class="card">
             <h3>Environment-Variablen</h3>
             {% if project.environment_variables %}
@@ -232,6 +315,34 @@
     <div class="col">
         <div class="card">
             <h3>Deployments</h3>
+            <h4>Letzte erfolgreiche Deployments</h4>
+            {% if successful_deployments %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Deployment ID</th>
+                            <th>Erfolgreich seit</th>
+                            <th>Commit</th>
+                            <th>Source Snapshot</th>
+                            <th>Artifact Path</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in successful_deployments %}
+                            <tr>
+                                <td><a href="{{ url_for('dashboard.deployment_detail', deployment_id=item.id) }}">{{ item.id }}</a></td>
+                                <td>{{ item.successful_at or item.updated_at }}</td>
+                                <td>{{ item.commit_sha or '-' }}</td>
+                                <td>{{ item.source_snapshot_path or '-' }}</td>
+                                <td>{{ item.artifact_snapshot_path or '-' }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p>Noch keine erfolgreichen Deployments vorhanden.</p>
+            {% endif %}
+
             {% if deployments %}
                 <table>
                     <thead>
@@ -292,4 +403,53 @@
         </div>
     </div>
 </div>
+
+<script>
+(() => {
+    const button = document.getElementById("load_runtime_logs_btn");
+    const serverSelect = document.getElementById("runtime_log_server_id");
+    const output = document.getElementById("runtime_logs_output");
+    const meta = document.getElementById("runtime_log_meta");
+    if (!button || !serverSelect || !output || !meta) {
+        return;
+    }
+
+    const baseUrl = "{{ url_for('dashboard.project_runtime_logs', project_id=project.id) }}";
+
+    const setLoading = (isLoading) => {
+        button.disabled = isLoading;
+        button.textContent = isLoading ? "Laedt..." : "Logs laden";
+    };
+
+    button.addEventListener("click", async () => {
+        setLoading(true);
+        try {
+            const serverId = serverSelect.value;
+            const url = serverId ? baseUrl + "?server_id=" + encodeURIComponent(serverId) : baseUrl;
+            const response = await fetch(url, { cache: "no-store" });
+            const data = await response.json();
+
+            if (!response.ok) {
+                meta.textContent = "Fehler beim Laden der Logs";
+                output.textContent = data.error || "Unbekannter Fehler";
+                return;
+            }
+
+            meta.textContent = "Server: " + data.server.name + " (" + data.server.ipv4 + ") | fetched_at: " + data.fetched_at + " | exit_code: " + data.exit_code;
+            const sections = [];
+            sections.push("$ " + data.command);
+            sections.push("\n--- stdout ---\n");
+            sections.push(data.stdout || "");
+            sections.push("\n--- stderr ---\n");
+            sections.push(data.stderr || "");
+            output.textContent = sections.join("");
+        } catch (err) {
+            meta.textContent = "Fehler beim Laden der Logs";
+            output.textContent = String(err);
+        } finally {
+            setLoading(false);
+        }
+    });
+})();
+</script>
 {% endblock %}

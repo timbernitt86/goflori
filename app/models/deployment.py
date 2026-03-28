@@ -12,6 +12,10 @@ class Deployment(TimestampMixin, db.Model):
     mode = db.Column(db.String(50), nullable=False, default="staging")
     trigger_source = db.Column(db.String(50), nullable=False, default="manual")
     commit_sha = db.Column(db.String(100), nullable=True)
+    successful = db.Column(db.Boolean, nullable=False, default=False)
+    successful_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    source_snapshot_path = db.Column(db.String(1000), nullable=True)
+    artifact_snapshot_path = db.Column(db.String(1000), nullable=True)
     output = db.Column(db.Text, nullable=True)
     error_message = db.Column(db.Text, nullable=True)
 
@@ -28,6 +32,10 @@ class Deployment(TimestampMixin, db.Model):
             "mode": self.mode,
             "trigger_source": self.trigger_source,
             "commit_sha": self.commit_sha,
+            "successful": self.successful,
+            "successful_at": self.successful_at.isoformat() if self.successful_at else None,
+            "source_snapshot_path": self.source_snapshot_path,
+            "artifact_snapshot_path": self.artifact_snapshot_path,
             "output": self.output,
             "error_message": self.error_message,
             "created_at": self.created_at.isoformat(),

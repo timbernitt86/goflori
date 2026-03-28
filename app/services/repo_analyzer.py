@@ -6,12 +6,28 @@ from app.services.repo_clone import LocalRepoCloneService
 
 @dataclass
 class RepoAnalysisResult:
+    detected_stack: str
+    confidence: float
+    relevant_files: list[str]
     framework: str
     entrypoint: str | None = None
     port: int = 8000
     uses_postgres: bool = False
     uses_redis: bool = False
     stack_files: list[str] | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "detected_stack": self.detected_stack,
+            "confidence": self.confidence,
+            "relevant_files": self.relevant_files,
+            "framework": self.framework,
+            "entrypoint": self.entrypoint,
+            "port": self.port,
+            "uses_postgres": self.uses_postgres,
+            "uses_redis": self.uses_redis,
+            "stack_files": self.stack_files,
+        }
 
 
 class RepoAnalyzer:
@@ -23,70 +39,89 @@ class RepoAnalyzer:
         self.cloner = cloner or LocalRepoCloneService()
 
     def _detect_from_files(self, path: Path) -> RepoAnalysisResult:
-        files: list[str] = []
+        def exists(name: str) -> bool:
+            return (path / name).exists()
 
-        has_package_json = (path / "package.json").exists()
-        has_requirements = (path / "requirements.txt").exists()
-        has_pyproject = (path / "pyproject.toml").exists()
-        has_artisan = (path / "artisan").exists()
-        has_dockerfile = (path / "Dockerfile").exists()
-        has_manage = (path / "manage.py").exists()
+        has_package_json = exists("package.json")
+        has_requirements = exists("requirements.txt")
+        has_pyproject = exists("pyproject.toml")
+        has_app_py = exists("app.py")
+        has_wsgi_py = exists("wsgi.py")
+        has_artisan = exists("artisan")
+        has_composer_json = exists("composer.json")
 
-        if has_package_json:
-            files.append("package.json")
-        if has_requirements:
-            files.append("requirements.txt")
-        if has_pyproject:
-            files.append("pyproject.toml")
-        if has_artisan:
-            files.append("artisan")
-        if has_dockerfile:
-            files.append("Dockerfile")
-        if has_manage:
-            files.append("manage.py")
+        python_files = [
+            item
+            for item, present in [
+                ("requirements.txt", has_requirements),
+                ("pyproject.toml", has_pyproject),
+                ("app.py", has_app_py),
+                ("wsgi.py", has_wsgi_py),
+            ]
+            if present
+        ]
+        node_files = [item for item, present in [("package.json", has_package_json)] if present]
+        laravel_files = [
+            item
+            for item, present in [("artisan", has_artisan), ("composer.json", has_composer_json)]
+            if present
+        ]
 
-        if has_artisan:
+        if has_artisan and has_composer_json:
             return RepoAnalysisResult(
+                detected_stack="laravel",
+                confidence=0.98,
+                relevant_files=laravel_files,
                 framework="laravel",
-                entrypoint="php-fpm",
-                port=9000,
-                uses_postgres=(path / "docker-compose.yml").exists(),
-                stack_files=files,
+                entrypoint="php artisan serve --host=0.0.0.0 --port=8000",
+                port=8000,
+                uses_postgres=exists("docker-compose.yml"),
+                stack_files=laravel_files,
             )
 
-        if has_manage:
+        if has_artisan or has_composer_json:
             return RepoAnalysisResult(
-                framework="django",
-                entrypoint="gunicorn app.wsgi:application",
+                detected_stack="laravel",
+                confidence=0.85,
+                relevant_files=laravel_files,
+                framework="laravel",
+                entrypoint="php artisan serve --host=0.0.0.0 --port=8000",
                 port=8000,
-                stack_files=files,
+                stack_files=laravel_files,
             )
 
         if has_package_json:
             return RepoAnalysisResult(
+                detected_stack="nodejs",
+                confidence=0.92,
+                relevant_files=node_files,
                 framework="node",
                 entrypoint="npm start",
                 port=3000,
-                stack_files=files,
+                stack_files=node_files,
             )
 
-        if has_requirements or has_pyproject:
+        if python_files:
+            confidence = min(0.6 + (0.1 * len(python_files)), 0.95)
             return RepoAnalysisResult(
+                detected_stack="flask",
+                confidence=confidence,
+                relevant_files=python_files,
                 framework="flask",
                 entrypoint="gunicorn app:app",
                 port=8000,
-                stack_files=files,
+                stack_files=python_files,
             )
 
-        if has_dockerfile:
-            return RepoAnalysisResult(
-                framework="docker",
-                entrypoint="docker build/run",
-                port=8000,
-                stack_files=files,
-            )
-
-        return RepoAnalysisResult(framework="unknown", stack_files=files)
+        return RepoAnalysisResult(
+            detected_stack="unknown",
+            confidence=0.2,
+            relevant_files=[],
+            framework="flask",
+            entrypoint=None,
+            port=8000,
+            stack_files=[],
+        )
 
     def analyze_path(self, repo_path: str) -> RepoAnalysisResult:
         path = Path(repo_path)

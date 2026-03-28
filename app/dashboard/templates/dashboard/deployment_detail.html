@@ -144,14 +144,14 @@
             {% set step_status_class = 'status-' ~ step.status if step.status in ['pending', 'running', 'success', 'failed'] else 'status-unknown' %}
             {% set is_terminal = step.status in ['success', 'failed'] %}
             {% if step.status == 'success' %}
-                {% set exit_code = 0 %}
+                {% set exit_code = step.exit_code if step.exit_code is not none else 0 %}
             {% elif step.status == 'failed' %}
-                {% set exit_code = 1 %}
+                {% set exit_code = step.exit_code if step.exit_code is not none else 1 %}
             {% else %}
-                {% set exit_code = '-' %}
+                {% set exit_code = step.exit_code if step.exit_code is not none else '-' %}
             {% endif %}
-            {% set started_at = step.created_at %}
-            {% set finished_at = step.updated_at if is_terminal else '-' %}
+            {% set started_at = step.started_at or step.created_at %}
+            {% set finished_at = step.finished_at if step.finished_at else ('-' if not is_terminal else step.updated_at) %}
 
             <details class="step-details {% if step.status == 'failed' %}failed{% endif %}" {% if step.status == 'failed' %}open{% endif %}>
                 <summary class="step-summary">
@@ -176,12 +176,13 @@
                     </div>
 
                     <p><strong>stdout</strong></p>
-                    <pre>{{ step.output or '' }}</pre>
+                    <pre>{{ step.stdout if step.stdout is not none else (step.output or '') }}</pre>
 
-                    {% if step.error_message %}
+                    {% set rendered_stderr = step.stderr if step.stderr is not none else step.error_message %}
+                    {% if rendered_stderr %}
                         <p class="stderr-title">stderr</p>
                         <div class="error-box">
-                            <pre class="pre-stderr">{{ step.error_message }}</pre>
+                            <pre class="pre-stderr">{{ rendered_stderr }}</pre>
                         </div>
                     {% else %}
                         <p><strong>stderr</strong></p>
@@ -217,13 +218,19 @@
     const formatStepLog = (step) => {
         const lines = [];
         lines.push("[" + step.order_index + "] " + step.name + " | status=" + step.status);
-        if (step.output) {
+        const stdout = step.stdout || step.output;
+        if (stdout) {
             lines.push("stdout:");
-            lines.push(step.output);
+            lines.push(stdout);
         }
-        if (step.error_message) {
+        const stderr = step.stderr || step.error_message;
+        if (stderr) {
             lines.push("stderr:");
-            lines.push(step.error_message);
+            lines.push(stderr);
+        }
+        if (step.exit_code !== null && step.exit_code !== undefined) {
+            lines.push("exit_code:");
+            lines.push(String(step.exit_code));
         }
         return lines.join("\n");
     };

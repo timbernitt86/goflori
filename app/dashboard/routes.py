@@ -1,16 +1,19 @@
 import logging
 import threading
+from datetime import datetime, timezone
 
 import requests.exceptions
 from flask import abort, current_app, flash, jsonify, redirect, render_template, request, url_for
+from flask_migrate import upgrade as migrate_upgrade
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
 from app.dashboard import bp
 from app.extensions import db
-from app.models import Deployment, DeploymentStep, EnvironmentVariable, Project, ProviderSetting, Repository, Server
+from app.models import ActivityLog, Deployment, DeploymentStep, EnvironmentVariable, Project, ProviderSetting, Repository, Server
 from app.services.hetzner import HetznerAPIError, HetznerClient
+from app.services.execution import DeploymentExecutor, PipelineContext
 from app.tasks.deployment import STEP_NAMES, run_deployment_task
 
 logger = logging.getLogger(__name__)
@@ -24,6 +27,15 @@ def _is_task_queue_usable() -> tuple[bool, str | None]:
         except Exception as exc:
             return False, f"redis client missing in current interpreter: {exc}"
     return True, None
+
+
+def _is_mock_server(server: Server | None) -> bool:
+    if server is None:
+        return False
+    provider_id = (server.provider_server_id or "").strip()
+    if provider_id.startswith("dry-run-") or provider_id == "dry-run-server-1":
+        return True
+    return False
 
 
 def _run_deployment_inline_async(deployment_id: int) -> None:
@@ -45,6 +57,104 @@ def _run_deployment_inline_async(deployment_id: int) -> None:
     thread.start()
 
 
+def _create_and_queue_deployment(
+    project: Project,
+    *,
+    selected_server: Server | None,
+    mode: str,
+    commit_sha: str | None,
+    trigger_source: str,
+) -> tuple[Deployment | None, bool]:
+    deployment: Deployment | None = None
+
+    try:
+        deployment = Deployment(
+            project_id=project.id,
+            server_id=selected_server.id if selected_server else None,
+            status="pending",
+            mode=mode,
+            commit_sha=commit_sha,
+            trigger_source=trigger_source,
+        )
+        db.session.add(deployment)
+        db.session.flush()
+
+        # Create initial steps so the UI can render progress immediately.
+        for index, name in enumerate(STEP_NAMES):
+            db.session.add(
+                DeploymentStep(
+                    deployment_id=deployment.id,
+                    name=name,
+                    status="pending",
+                    order_index=index,
+                )
+            )
+
+        db.session.commit()
+        logger.info(
+            "Dashboard created deployment id=%s for project id=%s source=%s",
+            deployment.id,
+            project.id,
+            trigger_source,
+        )
+    except Exception:
+        db.session.rollback()
+        logger.exception("Failed to create deployment for project id=%s", project.id)
+        return None, False
+
+    try:
+        queue_usable, queue_reason = _is_task_queue_usable()
+        if not queue_usable:
+            raise RuntimeError(queue_reason or "task queue unavailable")
+
+        async_result = run_deployment_task.delay(deployment.id)
+        logger.info(
+            "Queued deployment id=%s for project id=%s with task id=%s",
+            deployment.id,
+            project.id,
+            async_result.id,
+        )
+        flash(f"Deployment gestartet (Task ID: {async_result.id}).", "success")
+    except Exception as exc:
+        logger.exception(
+            "Failed to queue deployment id=%s for project id=%s",
+            deployment.id,
+            project.id,
+        )
+
+        if current_app.config.get("ORBITAL_INLINE_DEPLOY_ON_QUEUE_ERROR", False):
+            logger.warning(
+                "Queue unavailable for deployment id=%s. Falling back to inline execution.",
+                deployment.id,
+            )
+            _run_deployment_inline_async(deployment.id)
+            flash(
+                "Queue nicht erreichbar. Deployment laeuft im Hintergrund (Inline-Fallback asynchron).",
+                "warning",
+            )
+        else:
+            deployment.status = "failed"
+            deployment.error_message = f"Task queue error: {exc}"
+            db.session.commit()
+            flash("Deployment wurde angelegt, konnte aber nicht in die Queue gestellt werden.", "error")
+            return deployment, False
+
+    return deployment, True
+
+
+def _format_command_results(results) -> str:
+    lines: list[str] = []
+    for item in results:
+        lines.append(f"cmd={item.command}")
+        lines.append(f"exit_code={item.return_code}")
+        if item.stdout:
+            lines.append(f"stdout={item.stdout.strip()}")
+        if item.stderr:
+            lines.append(f"stderr={item.stderr.strip()}")
+        lines.append("---")
+    return "\n".join(lines).rstrip("-\n")
+
+
 def _resolve_target_server(project: Project, deployment: Deployment | None = None) -> Server | None:
     """Resolve target machine for a deployment.
 
@@ -53,12 +163,12 @@ def _resolve_target_server(project: Project, deployment: Deployment | None = Non
     2) project.active_server
     3) inferred fallback from project server timestamps
     """
-    if deployment and deployment.server is not None:
+    if deployment and deployment.server is not None and not _is_mock_server(deployment.server):
         return deployment.server
-    if project.active_server is not None:
+    if project.active_server is not None and not _is_mock_server(project.active_server):
         return project.active_server
 
-    servers = sorted(project.servers, key=lambda s: s.created_at)
+    servers = sorted([s for s in project.servers if not _is_mock_server(s)], key=lambda s: s.created_at)
     if not servers:
         return None
     if deployment is None:
@@ -261,12 +371,34 @@ def test_hetzner_connection():
 
 @bp.get("/projects")
 def projects():
-    deployment_counts = dict(
-        db.session.query(Deployment.project_id, func.count(Deployment.id)).group_by(Deployment.project_id).all()
-    )
-    projects_data = (
-        Project.query.options(joinedload(Project.repository)).order_by(Project.created_at.desc()).all()
-    )
+    try:
+        deployment_counts = dict(
+            db.session.query(Deployment.project_id, func.count(Deployment.id)).group_by(Deployment.project_id).all()
+        )
+        projects_data = (
+            Project.query.options(joinedload(Project.repository)).order_by(Project.created_at.desc()).all()
+        )
+    except Exception as exc:
+        logger.exception("Failed to load projects dashboard data. Trying DB migration recovery: %s", exc)
+        try:
+            migrate_upgrade()
+            db.session.remove()
+            deployment_counts = dict(
+                db.session.query(Deployment.project_id, func.count(Deployment.id)).group_by(Deployment.project_id).all()
+            )
+            projects_data = (
+                Project.query.options(joinedload(Project.repository)).order_by(Project.created_at.desc()).all()
+            )
+            flash("Datenbank wurde aktualisiert. Dashboard-Daten wurden neu geladen.", "warning")
+        except Exception as recovery_exc:
+            logger.exception("DB migration recovery for dashboard projects failed: %s", recovery_exc)
+            flash(
+                "Dashboard konnte nicht geladen werden. Bitte Server-Logs pruefen (DB-Schema oder Migration).",
+                "error",
+            )
+            deployment_counts = {}
+            projects_data = []
+
     return render_template(
         "dashboard/projects.html",
         projects=projects_data,
@@ -287,7 +419,10 @@ def create_project():
     desired_location = (request.form.get("desired_location") or "").strip() or None
     desired_image = (request.form.get("desired_image") or "").strip() or None
     repository_url = (request.form.get("repository_url") or "").strip()
-    repository_provider = (request.form.get("repository_provider") or "github").strip() or "github"
+    repository_provider = (request.form.get("repository_provider") or "").strip() or None
+    repository_branch = (request.form.get("repository_branch") or "").strip() or branch
+    repository_access_token = (request.form.get("repository_access_token") or "").strip() or None
+    repository_is_private = (request.form.get("repository_is_private") or "").strip() in {"1", "true", "on", "yes"}
     env_lines = (request.form.get("env_lines") or "").splitlines()
 
     if not name:
@@ -308,7 +443,13 @@ def create_project():
     )
 
     if repository_url:
-        project.repository = Repository(provider=repository_provider, url=repository_url, branch=branch)
+        project.repository = Repository(
+            provider=repository_provider,
+            repo_url=repository_url,
+            branch=repository_branch,
+            access_token=repository_access_token,
+            is_private=repository_is_private,
+        )
 
     for line in env_lines:
         item = line.strip()
@@ -361,6 +502,13 @@ def project_detail(project_id: int):
     hetzner_defaults = _get_hetzner_defaults()
 
     deployments = sorted(project.deployments, key=lambda d: d.created_at, reverse=True)
+    successful_deployments = [deployment for deployment in deployments if deployment.successful or deployment.status == "success"]
+    successful_deployments = sorted(
+        successful_deployments,
+        key=lambda d: d.successful_at or d.updated_at,
+        reverse=True,
+    )[:5]
+    visible_servers = [server for server in project.servers if not _is_mock_server(server)]
     latest_server = _resolve_target_server(project)
     domain_target_ip = latest_server.ipv4 if project.domain and latest_server else None
     deployment_meta = {}
@@ -385,7 +533,9 @@ def project_detail(project_id: int):
     return render_template(
         "dashboard/project_detail.html",
         project=project,
+        visible_servers=visible_servers,
         deployments=deployments,
+        successful_deployments=successful_deployments,
         deployment_meta=deployment_meta,
         latest_server=latest_server,
         domain_target_ip=domain_target_ip,
@@ -412,6 +562,52 @@ def save_project_infrastructure(project_id: int):
         db.session.rollback()
         logger.exception("Failed to save project infrastructure for project id=%s", project.id)
         flash("Projekt-Infrastruktur konnte nicht gespeichert werden.", "error")
+
+    return redirect(url_for("dashboard.project_detail", project_id=project.id))
+
+
+@bp.post("/projects/<int:project_id>/repository")
+def save_project_repository(project_id: int):
+    project = Project.query.get_or_404(project_id)
+
+    repo_url = (request.form.get("repo_url") or "").strip()
+    branch = (request.form.get("branch") or "").strip() or project.branch or "main"
+    provider = (request.form.get("provider") or "").strip() or None
+    access_token = (request.form.get("access_token") or "").strip()
+    is_private = (request.form.get("is_private") or "").strip() in {"1", "true", "on", "yes"}
+
+    if not repo_url and project.repository:
+        db.session.delete(project.repository)
+        try:
+            db.session.commit()
+            flash("Repository-Verknuepfung wurde entfernt.", "success")
+        except Exception:
+            db.session.rollback()
+            logger.exception("Failed to delete repository settings for project id=%s", project.id)
+            flash("Repository-Verknuepfung konnte nicht entfernt werden.", "error")
+        return redirect(url_for("dashboard.project_detail", project_id=project.id))
+
+    if not repo_url:
+        flash("Repository-URL darf nicht leer sein.", "error")
+        return redirect(url_for("dashboard.project_detail", project_id=project.id))
+
+    repository = project.repository or Repository(project_id=project.id)
+    repository.repo_url = repo_url
+    repository.branch = branch
+    repository.provider = provider
+    repository.is_private = is_private
+    # Keep existing token if field is intentionally left empty.
+    if access_token:
+        repository.access_token = access_token
+
+    db.session.add(repository)
+    try:
+        db.session.commit()
+        flash("Repository-Einstellungen wurden gespeichert.", "success")
+    except Exception:
+        db.session.rollback()
+        logger.exception("Failed to save repository settings for project id=%s", project.id)
+        flash("Repository-Einstellungen konnten nicht gespeichert werden.", "error")
 
     return redirect(url_for("dashboard.project_detail", project_id=project.id))
 
@@ -516,6 +712,64 @@ def activate_project_server(project_id: int, server_id: int):
     return redirect(url_for("dashboard.project_detail", project_id=project.id))
 
 
+@bp.post("/projects/<int:project_id>/cleanup")
+def cleanup_project_server_artifacts(project_id: int):
+    project = Project.query.get_or_404(project_id)
+    selected_server_id = (request.form.get("server_id") or "").strip()
+
+    selected_server = None
+    if selected_server_id:
+        try:
+            selected_server = Server.query.filter_by(project_id=project.id, id=int(selected_server_id)).first()
+        except ValueError:
+            selected_server = None
+        if selected_server is None:
+            flash("Ausgewaehlter Zielserver wurde nicht gefunden.", "error")
+            return redirect(url_for("dashboard.project_detail", project_id=project.id))
+
+    target_server = selected_server or _resolve_target_server(project)
+    if target_server is None or not target_server.ipv4:
+        flash("Kein Zielserver mit gueltiger IP fuer Cleanup gefunden.", "error")
+        return redirect(url_for("dashboard.project_detail", project_id=project.id))
+
+    executor = DeploymentExecutor()
+    ctx = PipelineContext(
+        project_name=project.name,
+        slug=project.slug,
+        framework=project.framework or "flask",
+        domain=project.domain,
+        repository_url=project.repository.repo_url if project.repository else None,
+        repository_branch=project.repository.branch if project.repository and project.repository.branch else project.branch,
+    )
+
+    try:
+        results = executor.cleanup_project_from_server(target_server.ipv4, ctx)
+        failed = [item for item in results if item.return_code != 0]
+        if failed:
+            message = _format_command_results(results)
+            flash("Projekt-Cleanup ist teilweise fehlgeschlagen. Details siehe Log.", "error")
+            logger.error("Project cleanup failed project_id=%s server_id=%s\n%s", project.id, target_server.id, message)
+            return redirect(url_for("dashboard.project_detail", project_id=project.id))
+
+        project.status = "draft"
+        db.session.add(
+            ActivityLog(
+                project_id=project.id,
+                action="project.cleanup.completed",
+                actor="dashboard",
+                message=f"Server cleanup completed on {target_server.name} ({target_server.ipv4})",
+            )
+        )
+        db.session.commit()
+        flash("Projekt wurde auf dem Server rueckstandslos bereinigt. Du kannst jetzt neu deployen.", "success")
+    except Exception as exc:
+        db.session.rollback()
+        logger.exception("Project cleanup failed project_id=%s server_id=%s", project.id, target_server.id)
+        flash(f"Projekt-Cleanup fehlgeschlagen: {exc}", "error")
+
+    return redirect(url_for("dashboard.project_detail", project_id=project.id))
+
+
 @bp.post("/projects/<int:project_id>/env/<int:env_id>/delete")
 def delete_project_env(project_id: int, env_id: int):
     project = Project.query.get_or_404(project_id)
@@ -541,7 +795,6 @@ def delete_project_env(project_id: int, env_id: int):
 @bp.post("/projects/<int:project_id>/deploy")
 def deploy_project(project_id: int):
     project = Project.query.get_or_404(project_id)
-    deployment = None
     selected_server_id = (request.form.get("server_id") or "").strip()
 
     selected_server = None
@@ -554,78 +807,93 @@ def deploy_project(project_id: int):
             flash("Ausgewaehlter Zielserver wurde nicht gefunden.", "error")
             return redirect(url_for("dashboard.project_detail", project_id=project.id))
 
-    try:
-        deployment = Deployment(
-            project_id=project.id,
-            server_id=selected_server.id if selected_server else None,
-            status="pending",
-            mode=(request.form.get("mode") or "staging").strip() or "staging",
-            commit_sha=(request.form.get("commit_sha") or "").strip() or None,
-            trigger_source="dashboard",
-        )
-        db.session.add(deployment)
-        db.session.flush()
-
-        # Create initial steps so the UI can render progress immediately.
-        for index, name in enumerate(STEP_NAMES):
-            db.session.add(
-                DeploymentStep(
-                    deployment_id=deployment.id,
-                    name=name,
-                    status="pending",
-                    order_index=index,
-                )
-            )
-
-        db.session.commit()
-        logger.info(
-            "Dashboard created deployment id=%s for project id=%s",
-            deployment.id,
-            project.id,
-        )
-    except Exception:
-        db.session.rollback()
-        logger.exception("Failed to create deployment for project id=%s", project.id)
+    deployment, created_ok = _create_and_queue_deployment(
+        project,
+        selected_server=selected_server,
+        mode=(request.form.get("mode") or "staging").strip() or "staging",
+        commit_sha=(request.form.get("commit_sha") or "").strip() or None,
+        trigger_source="dashboard",
+    )
+    if not created_ok or deployment is None:
         flash("Deployment konnte nicht erstellt werden.", "error")
         return redirect(url_for("dashboard.project_detail", project_id=project.id))
 
-    try:
-        queue_usable, queue_reason = _is_task_queue_usable()
-        if not queue_usable:
-            raise RuntimeError(queue_reason or "task queue unavailable")
+    return redirect(url_for("dashboard.deployment_detail", deployment_id=deployment.id))
 
-        async_result = run_deployment_task.delay(deployment.id)
-        logger.info(
-            "Queued deployment id=%s for project id=%s with task id=%s",
-            deployment.id,
-            project.id,
-            async_result.id,
-        )
-        flash(f"Deployment gestartet (Task ID: {async_result.id}).", "success")
-    except Exception as exc:
-        logger.exception(
-            "Failed to queue deployment id=%s for project id=%s",
-            deployment.id,
-            project.id,
-        )
 
-        if current_app.config.get("ORBITAL_INLINE_DEPLOY_ON_QUEUE_ERROR", False):
-            logger.warning(
-                "Queue unavailable for deployment id=%s. Falling back to inline execution.",
-                deployment.id,
-            )
-            _run_deployment_inline_async(deployment.id)
-            flash(
-                "Queue nicht erreichbar. Deployment laeuft im Hintergrund (Inline-Fallback asynchron).",
-                "warning",
-            )
-        else:
-            deployment.status = "failed"
-            deployment.error_message = f"Task queue error: {exc}"
-            db.session.commit()
-            flash("Deployment wurde angelegt, konnte aber nicht in die Queue gestellt werden.", "error")
+@bp.post("/projects/<int:project_id>/redeploy")
+def redeploy_project(project_id: int):
+    project = Project.query.options(joinedload(Project.servers), joinedload(Project.active_server)).filter_by(id=project_id).first()
+    if not project:
+        abort(404)
+
+    preferred_server = _resolve_target_server(project)
+    deployment, created_ok = _create_and_queue_deployment(
+        project,
+        selected_server=preferred_server,
+        mode="production",
+        commit_sha=None,
+        trigger_source="dashboard-redeploy",
+    )
+    if not created_ok or deployment is None:
+        flash("Redeploy konnte nicht erstellt werden.", "error")
+        return redirect(url_for("dashboard.project_detail", project_id=project.id))
+
+    if preferred_server:
+        flash(
+            f"Redeploy gestartet: Server '{preferred_server.name}' wird wiederverwendet.",
+            "success",
+        )
+    else:
+        flash("Redeploy gestartet: Kein bestehender Server verfuegbar, Server wird bei Bedarf neu provisioniert.", "warning")
 
     return redirect(url_for("dashboard.deployment_detail", deployment_id=deployment.id))
+
+
+@bp.get("/projects/<int:project_id>/runtime-logs")
+def project_runtime_logs(project_id: int):
+    project = Project.query.options(
+        joinedload(Project.servers),
+        joinedload(Project.active_server),
+    ).filter_by(id=project_id).first()
+    if not project:
+        abort(404)
+
+    selected_server_id = (request.args.get("server_id") or "").strip()
+    selected_server = None
+    if selected_server_id:
+        try:
+            selected_server = Server.query.filter_by(project_id=project.id, id=int(selected_server_id)).first()
+        except ValueError:
+            selected_server = None
+        if selected_server is None:
+            return jsonify({"error": "Ausgewaehlter Zielserver wurde nicht gefunden."}), 400
+
+    target_server = selected_server or _resolve_target_server(project)
+    if target_server is None or not target_server.ipv4:
+        return jsonify({"error": "Kein Zielserver mit gueltiger IP gefunden."}), 400
+
+    deploy_dir = f"/opt/orbital/{project.slug}"
+    command = f"docker-compose -f {deploy_dir}/docker-compose.yml logs --tail=200 web"
+
+    executor = DeploymentExecutor()
+    result = executor.ssh.run_one(target_server.ipv4, command)
+
+    payload = {
+        "project_id": project.id,
+        "project_slug": project.slug,
+        "server": {
+            "id": target_server.id,
+            "name": target_server.name,
+            "ipv4": target_server.ipv4,
+        },
+        "command": result.command,
+        "exit_code": result.return_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return jsonify(payload), (200 if result.return_code == 0 else 500)
 
 
 @bp.get("/deployments/<int:deployment_id>")
@@ -695,8 +963,15 @@ def deployment_status(deployment_id: int):
                 "name": step.name,
                 "status": step.status,
                 "order_index": step.order_index,
-                "output": step.output or "",
-                "error_message": step.error_message or "",
+                "started_at": step.started_at.isoformat() if step.started_at else None,
+                "finished_at": step.finished_at.isoformat() if step.finished_at else None,
+                "stdout": (step.stdout if step.stdout is not None else step.output) or "",
+                "stderr": (step.stderr if step.stderr is not None else step.error_message) or "",
+                "exit_code": step.exit_code,
+                "json_details": step.json_details,
+                # Legacy keys (compatibility)
+                "output": (step.stdout if step.stdout is not None else step.output) or "",
+                "error_message": (step.stderr if step.stderr is not None else step.error_message) or "",
                 "created_at": step.created_at.isoformat(),
                 "updated_at": step.updated_at.isoformat(),
             }
