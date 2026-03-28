@@ -29,6 +29,12 @@ SECRET_ENV_SUFFIXES = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 
 def _is_task_queue_usable() -> tuple[bool, str | None]:
     broker_url = ((current_app.config.get("CELERY") or {}).get("broker_url") or "").strip()
+
+    # memory:// is only valid when a worker runs in the same process (tests/dev).
+    # In production there is no such worker, so tasks would be silently swallowed.
+    if broker_url.startswith("memory://") or broker_url.startswith("cache+memory://"):
+        return False, "Kein Redis konfiguriert – Deployment wird direkt ausgefuehrt."
+
     if broker_url.startswith("redis://") or broker_url.startswith("rediss://"):
         try:
             client = redis.Redis.from_url(
@@ -40,6 +46,7 @@ def _is_task_queue_usable() -> tuple[bool, str | None]:
             client.ping()
         except Exception as exc:
             return False, f"redis backend unreachable for task queue: {exc}"
+
     return True, None
 
 
@@ -164,27 +171,25 @@ def _create_and_queue_deployment(
         )
         flash(f"Deployment gestartet (Task ID: {async_result.id}).", "success")
     except Exception as exc:
-        logger.exception(
-            "Failed to queue deployment id=%s for project id=%s",
-            deployment.id,
-            project.id,
-        )
-
+        queue_reason = str(exc)
         if current_app.config.get("ORBITAL_INLINE_DEPLOY_ON_QUEUE_ERROR", False):
-            logger.warning(
-                "Queue unavailable for deployment id=%s. Falling back to inline execution.",
+            logger.info(
+                "Queue unavailable for deployment id=%s (%s). Running inline.",
                 deployment.id,
+                queue_reason,
             )
             _run_deployment_inline_async(deployment.id)
-            flash(
-                "Queue nicht erreichbar. Deployment laeuft im Hintergrund (Inline-Fallback asynchron).",
-                "warning",
-            )
+            flash("Deployment gestartet.", "success")
         else:
+            logger.exception(
+                "Failed to queue deployment id=%s for project id=%s",
+                deployment.id,
+                project.id,
+            )
             deployment.status = "failed"
             deployment.error_message = f"Task queue error: {exc}"
             db.session.commit()
-            flash("Deployment wurde angelegt, konnte aber nicht in die Queue gestellt werden.", "error")
+            flash("Deployment wurde angelegt, konnte aber nicht gestartet werden.", "error")
             return deployment, False
 
     return deployment, True
