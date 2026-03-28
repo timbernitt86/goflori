@@ -53,11 +53,13 @@ class DeploymentTemplateService:
         app_name: str,
         domain: str | None,
         app_port: int = 8000,
+        host_port: int | None = None,
         local_repository_path: str | None = None,
         build_source_dir: str = "repo",
     ) -> RenderedDeploymentFiles:
         framework = framework or "flask"
         public_domain = self._normalize_public_domain(domain)
+        public_port = host_port or app_port
         repository_path = Path(local_repository_path) if local_repository_path else None
         requirements_exists = bool(repository_path and (repository_path / "requirements.txt").exists())
         gunicorn_target = self._resolve_flask_gunicorn_target(repository_path) if framework == "flask" else None
@@ -93,7 +95,7 @@ CMD ["sh", "-c", "gunicorn -b 0.0.0.0:{app_port} {gunicorn_target} --access-logf
     container_name: {app_name}-web
     restart: unless-stopped
     ports:
-      - "127.0.0.1:{app_port}:{app_port}"
+            - "127.0.0.1:{public_port}:{app_port}"
     # Runtime ENV values are injected into this file during upload_artifacts.
     env_file:
       - .env
@@ -105,7 +107,7 @@ CMD ["sh", "-c", "gunicorn -b 0.0.0.0:{app_port} {gunicorn_target} --access-logf
     server_name {server_name};
 
     location / {{
-        proxy_pass http://127.0.0.1:{app_port};
+            proxy_pass http://127.0.0.1:{public_port};
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -122,6 +124,7 @@ CMD ["sh", "-c", "gunicorn -b 0.0.0.0:{app_port} {gunicorn_target} --access-logf
                 "framework": framework,
                 "project_name": app_name,
                 "app_port": app_port,
+                "host_port": public_port,
                 "public_domain": public_domain,
                 "local_repository_path": local_repository_path,
                 "build_context": local_repository_path,

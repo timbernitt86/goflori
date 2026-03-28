@@ -22,6 +22,7 @@ class PipelineContext:
     server_type: str = "cx22"
     region: str = "nbg1"
     app_port: int = 8000
+    host_port: int = 8000
 
 
 @dataclass
@@ -58,6 +59,7 @@ class DeploymentExecutor:
             app_name=ctx.slug,
             domain=ctx.domain,
             app_port=ctx.app_port,
+            host_port=ctx.host_port,
             local_repository_path=ctx.local_repository_path,
             build_source_dir="repo",
         )
@@ -243,5 +245,5 @@ class DeploymentExecutor:
         return self.ssh.run_many(host, commands)
 
     def healthcheck(self, host: str, ctx: PipelineContext):
-        commands = [f"curl -s http://127.0.0.1:{ctx.app_port} | head -c 50"]
+        commands = [f"curl -s http://127.0.0.1:{ctx.host_port} | head -c 50"]
         return self.ssh.run_many(host, commands)

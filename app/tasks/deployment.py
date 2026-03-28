@@ -49,6 +49,11 @@ STEP_ERROR_CATEGORY: dict[str, str] = {
 }
 
 
+def _host_port_for_project(project_id: int) -> int:
+    # Reserve a stable per-project host port in a safe range to avoid clashes.
+    return 10000 + (project_id % 50000)
+
+
 class RemoteCommandError(RuntimeError):
     def __init__(self, step_name: str, failed_commands: list[dict], message: str):
         super().__init__(message)
@@ -333,6 +338,7 @@ def run_deployment_task(deployment_id: int):
         project_environment=project.environment or "production",
         env_values={item.key: item.value for item in project.environment_variables},
         env_secret_keys={item.key for item in project.environment_variables if item.is_secret},
+        host_port=_host_port_for_project(project.id),
     )
 
     try:
@@ -542,7 +548,8 @@ def run_deployment_task(deployment_id: int):
                     f"deployment_mode={ctx.deployment_mode}\n"
                     f"Dockerfile, compose and nginx config rendered for {ctx.framework}\n"
                     f"build_context={ctx.local_repository_path or '-'}\n"
-                    f"app_port={ctx.app_port}\n"
+                    f"container_port={ctx.app_port}\n"
+                    f"host_port={ctx.host_port}\n"
                     f"project_env={ctx.project_environment}\n"
                     f"env_keys={len(ctx.env_values)} (secret_keys={len(ctx.env_secret_keys)})\n"
                     "deployment_structure=/opt/orbital/<slug>/{Dockerfile,docker-compose.yml,nginx.conf,repo/}"
