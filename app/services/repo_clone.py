@@ -1,3 +1,4 @@
+import os
 import re
 import shutil
 import subprocess
@@ -36,7 +37,7 @@ class LocalRepoCloneService:
         if has_app_context():
             configured_root = current_app.config.get("ORBITAL_REPO_CLONE_ROOT", "")
         if configured_root:
-            self.clone_root = Path(configured_root)
+            self.clone_root = self._resolve_clone_root(configured_root)
         else:
             # Default to /tmp/orbital/repos on Unix; use system temp on Windows.
             if Path("/tmp").exists():
@@ -44,6 +45,44 @@ class LocalRepoCloneService:
             else:
                 self.clone_root = Path(tempfile.gettempdir()) / "orbital" / "repos"
         self.clone_root.mkdir(parents=True, exist_ok=True)
+
+    def _resolve_clone_root(self, configured_root: str) -> Path:
+        configured = Path(configured_root)
+        if configured.is_absolute():
+            if os.name == "nt" and configured.drive == "" and configured_root.replace("\\", "/").startswith("/"):
+                return Path(tempfile.gettempdir()) / configured_root.replace("\\", "/").strip("/")
+            return configured
+
+        normalized = configured_root.replace("\\", "/")
+        if normalized.startswith("/"):
+            if os.name != "nt" and Path("/tmp").exists():
+                return Path(normalized)
+            return Path(tempfile.gettempdir()) / normalized.strip("/")
+
+        return Path(normalized)
+
+    def _reset_clone_dir(self, target_dir: Path) -> Path:
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        return target_dir
+
+    def _allocate_clone_dir(self, deployment_id: int | str | None, repo_url: str) -> Path:
+        if deployment_id is None:
+            repo_name = self._safe_name(repo_url)
+            return Path(tempfile.mkdtemp(prefix=f"{repo_name}-", dir=str(self.clone_root)))
+
+        preferred_dir = self._deployment_clone_dir(deployment_id)
+        try:
+            return self._reset_clone_dir(preferred_dir)
+        except OSError:
+            repo_name = self._safe_name(repo_url)
+            return Path(
+                tempfile.mkdtemp(
+                    prefix=f"{deployment_id}-{repo_name}-",
+                    dir=str(self.clone_root),
+                )
+            )
 
     def _safe_name(self, repo_url: str) -> str:
         value = repo_url.rstrip("/").split("/")[-1]
@@ -89,14 +128,7 @@ class LocalRepoCloneService:
         branch_name = (branch or "main").strip() or "main"
         authenticated_url, _auth_strategy = self._prepare_repository_url(repo_url=repo_url, access_token=access_token)
 
-        if deployment_id is None:
-            repo_name = self._safe_name(repo_url)
-            local_dir = Path(tempfile.mkdtemp(prefix=f"{repo_name}-", dir=str(self.clone_root)))
-        else:
-            local_dir = self._deployment_clone_dir(deployment_id)
-            if local_dir.exists():
-                shutil.rmtree(local_dir)
-            local_dir.mkdir(parents=True, exist_ok=True)
+        local_dir = self._allocate_clone_dir(deployment_id=deployment_id, repo_url=repo_url)
 
         command_results: list[GitCommandResult] = []
         clone_result = self._run_git(

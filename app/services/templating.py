@@ -19,6 +19,14 @@ class RenderedDeploymentFiles:
 
 
 class DeploymentTemplateService:
+    def _normalize_public_domain(self, domain: str | None) -> str | None:
+        value = (domain or "").strip().lower()
+        if not value:
+            return None
+        if value in {"localhost", "127.0.0.1", "0.0.0.0"}:
+            return None
+        return value
+
     def _resolve_flask_gunicorn_target(self, repository_path: Path | None) -> str:
         if repository_path is None:
             return "app:app"
@@ -49,6 +57,7 @@ class DeploymentTemplateService:
         build_source_dir: str = "repo",
     ) -> RenderedDeploymentFiles:
         framework = framework or "flask"
+        public_domain = self._normalize_public_domain(domain)
         repository_path = Path(local_repository_path) if local_repository_path else None
         requirements_exists = bool(repository_path and (repository_path / "requirements.txt").exists())
         gunicorn_target = self._resolve_flask_gunicorn_target(repository_path) if framework == "flask" else None
@@ -85,12 +94,12 @@ CMD ["sh", "-c", "gunicorn -b 0.0.0.0:{app_port} {gunicorn_target} --access-logf
     restart: unless-stopped
     ports:
       - "127.0.0.1:{app_port}:{app_port}"
-        # Runtime ENV values are injected into this file during upload_artifacts.
+    # Runtime ENV values are injected into this file during upload_artifacts.
     env_file:
       - .env
 """
 
-        server_name = domain or "_"
+        server_name = public_domain or "_"
         nginx_conf = f"""server {{
     listen 80;
     server_name {server_name};
@@ -113,6 +122,7 @@ CMD ["sh", "-c", "gunicorn -b 0.0.0.0:{app_port} {gunicorn_target} --access-logf
                 "framework": framework,
                 "project_name": app_name,
                 "app_port": app_port,
+                "public_domain": public_domain,
                 "local_repository_path": local_repository_path,
                 "build_context": local_repository_path,
                 "build_source_dir": build_source_dir,
