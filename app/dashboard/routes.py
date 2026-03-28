@@ -19,6 +19,12 @@ from app.tasks.deployment import STEP_NAMES, run_deployment_task
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_SERVER_TYPE = "cx22"
+DEFAULT_LOCATION = "nbg1"
+DEFAULT_IMAGE = "ubuntu-24.04"
+SECRET_ENV_SUFFIXES = ("KEY", "TOKEN", "SECRET", "PASSWORD")
+
+
 def _is_task_queue_usable() -> tuple[bool, str | None]:
     broker_url = ((current_app.config.get("CELERY") or {}).get("broker_url") or "").strip()
     if broker_url.startswith("redis://"):
@@ -186,19 +192,127 @@ def _get_or_init_hetzner_setting() -> ProviderSetting:
         return setting
     return ProviderSetting(
         provider_name="hetzner",
-        default_location="nbg1",
-        default_server_type="cx22",
-        default_image="ubuntu-24.04",
+        default_location=DEFAULT_LOCATION,
+        default_server_type=DEFAULT_SERVER_TYPE,
+        default_image=DEFAULT_IMAGE,
     )
 
 
 def _get_hetzner_defaults() -> dict[str, str | None]:
     setting = ProviderSetting.query.filter_by(provider_name="hetzner").first()
     return {
-        "default_server_type": setting.default_server_type if setting else None,
-        "default_location": setting.default_location if setting else None,
-        "default_image": setting.default_image if setting else None,
+        "default_server_type": (setting.default_server_type if setting else None) or DEFAULT_SERVER_TYPE,
+        "default_location": (setting.default_location if setting else None) or DEFAULT_LOCATION,
+        "default_image": (setting.default_image if setting else None) or DEFAULT_IMAGE,
         "ssh_key_name": setting.ssh_key_name if setting else None,
+    }
+
+
+def _infer_repository_provider(repo_url: str | None) -> str | None:
+    value = (repo_url or "").strip().lower()
+    if not value:
+        return None
+    if "github.com" in value:
+        return "github"
+    if "gitlab.com" in value:
+        return "gitlab"
+    if "bitbucket.org" in value:
+        return "bitbucket"
+    return None
+
+
+def _is_secret_env_key(key: str) -> bool:
+    return any(key.upper().endswith(suffix) for suffix in SECRET_ENV_SUFFIXES)
+
+
+def _parse_env_lines(raw_value: str) -> list[tuple[str, str, bool]]:
+    items: list[tuple[str, str, bool]] = []
+    for line in raw_value.splitlines():
+        item = line.strip()
+        if not item or item.startswith("#") or "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        items.append((key, value.strip(), _is_secret_env_key(key)))
+    return items
+
+
+def _upsert_project_environment(project: Project, raw_value: str) -> dict[str, int]:
+    created = 0
+    updated = 0
+    existing_by_key = {item.key: item for item in project.environment_variables}
+
+    for key, value, is_secret in _parse_env_lines(raw_value):
+        existing = existing_by_key.get(key)
+        if existing:
+            existing.value = value
+            existing.is_secret = is_secret
+            updated += 1
+            continue
+
+        project.environment_variables.append(
+            EnvironmentVariable(
+                key=key,
+                value=value,
+                is_secret=is_secret,
+            )
+        )
+        created += 1
+
+    return {"created": created, "updated": updated}
+
+
+def _project_env_lines(project: Project) -> str:
+    return "\n".join(f"{item.key}={item.value}" for item in sorted(project.environment_variables, key=lambda env: env.key))
+
+
+def _extract_error_analysis(step: DeploymentStep | None) -> dict | None:
+    if step is None or not isinstance(step.json_details, dict):
+        return None
+    analysis = step.json_details.get("error_analysis")
+    if isinstance(analysis, dict) and analysis.get("error_type"):
+        return analysis
+    return None
+
+
+def _latest_failed_step(deployment: Deployment) -> DeploymentStep | None:
+    steps = sorted(deployment.steps, key=lambda s: (s.order_index, s.id), reverse=True)
+    return next((step for step in steps if step.status == "failed"), None)
+
+
+def _suggest_fix_issue(error_analysis: dict | None, failed_step_name: str | None) -> dict:
+    error_type = (error_analysis or {}).get("error_type")
+    if error_type == "env_missing":
+        return {
+            "action": "redeploy",
+            "title": "Fix Issue",
+            "label": "Deployment erneut ausfuehren",
+            "description": "Startet ein neues Deployment, nachdem App-Einstellungen aktualisiert wurden.",
+        }
+    if error_type == "nginx_error" or failed_step_name in {"configure_reverse_proxy", "run_certbot", "verify_https"}:
+        return {
+            "action": "reload_nginx",
+            "title": "Fix Issue",
+            "label": "Nginx neu laden",
+            "description": "Prueft die Nginx-Konfiguration und laedt Nginx neu.",
+        }
+    if error_type in {"container_start_failure", "port_unreachable", "db_unreachable"} or failed_step_name in {
+        "start_containers",
+        "healthcheck",
+    }:
+        return {
+            "action": "restart_container",
+            "title": "Fix Issue",
+            "label": "Container neu starten",
+            "description": "Startet den Web-Container neu, ohne ein komplettes Deployment auszufuehren.",
+        }
+    return {
+        "action": "redeploy",
+        "title": "Fix Issue",
+        "label": "Deployment erneut ausfuehren",
+        "description": "Startet ein neues Deployment mit denselben Projekteinstellungen.",
     }
 
 
@@ -409,6 +523,7 @@ def projects():
 
 @bp.post("/projects")
 def create_project():
+    create_action = (request.form.get("create_action") or "create").strip()
     name = (request.form.get("name") or "").strip()
     slug = (request.form.get("slug") or "").strip()
     framework = (request.form.get("framework") or "").strip() or None
@@ -419,11 +534,11 @@ def create_project():
     desired_location = (request.form.get("desired_location") or "").strip() or None
     desired_image = (request.form.get("desired_image") or "").strip() or None
     repository_url = (request.form.get("repository_url") or "").strip()
-    repository_provider = (request.form.get("repository_provider") or "").strip() or None
+    repository_provider = (request.form.get("repository_provider") or "").strip() or _infer_repository_provider(repository_url)
     repository_branch = (request.form.get("repository_branch") or "").strip() or branch
     repository_access_token = (request.form.get("repository_access_token") or "").strip() or None
     repository_is_private = (request.form.get("repository_is_private") or "").strip() in {"1", "true", "on", "yes"}
-    env_lines = (request.form.get("env_lines") or "").splitlines()
+    env_lines = request.form.get("env_lines") or ""
 
     if not name:
         flash("Projektname ist erforderlich.", "error")
@@ -451,24 +566,7 @@ def create_project():
             is_private=repository_is_private,
         )
 
-    for line in env_lines:
-        item = line.strip()
-        if not item or "=" not in item:
-            continue
-        key, value = item.split("=", 1)
-        key = key.strip()
-        if not key:
-            continue
-        project.environment_variables.append(
-            EnvironmentVariable(
-                key=key,
-                value=value.strip(),
-                is_secret=key.upper().endswith("KEY")
-                or key.upper().endswith("TOKEN")
-                or key.upper().endswith("SECRET")
-                or key.upper().endswith("PASSWORD"),
-            )
-        )
+    _upsert_project_environment(project, env_lines)
 
     db.session.add(project)
     try:
@@ -478,7 +576,78 @@ def create_project():
         flash("Projekt konnte nicht erstellt werden (Slug vermutlich bereits vergeben).", "error")
         return redirect(url_for("dashboard.projects"))
 
+    if create_action == "create_and_deploy":
+        deployment, created_ok = _create_and_queue_deployment(
+            project,
+            selected_server=None,
+            mode="production",
+            commit_sha=None,
+            trigger_source="dashboard-onboarding",
+        )
+        if created_ok and deployment is not None:
+            flash(
+                "Projekt wurde erstellt und Deployment direkt gestartet.",
+                "success",
+            )
+            return redirect(url_for("dashboard.deployment_detail", deployment_id=deployment.id))
+
+        flash(
+            "Projekt wurde erstellt, aber das automatische Deployment konnte nicht gestartet werden.",
+            "warning",
+        )
+        return redirect(url_for("dashboard.project_detail", project_id=project.id))
+
     flash(f"Projekt '{project.name}' wurde erstellt.", "success")
+    return redirect(url_for("dashboard.project_detail", project_id=project.id))
+
+
+@bp.post("/projects/<int:project_id>/setup")
+def save_project_setup(project_id: int):
+    project = Project.query.options(joinedload(Project.repository), joinedload(Project.environment_variables)).filter_by(id=project_id).first()
+    if not project:
+        abort(404)
+
+    project.domain = (request.form.get("domain") or "").strip() or None
+
+    repo_url = (request.form.get("repo_url") or "").strip()
+    branch = (request.form.get("branch") or "").strip() or project.branch or "main"
+    provider = (request.form.get("provider") or "").strip() or _infer_repository_provider(repo_url)
+    access_token = (request.form.get("access_token") or "").strip()
+    is_private = (request.form.get("is_private") or "").strip() in {"1", "true", "on", "yes"}
+
+    if repo_url:
+        repository = project.repository or Repository(project_id=project.id)
+        repository.repo_url = repo_url
+        repository.branch = branch
+        repository.provider = provider
+        repository.is_private = is_private
+        if access_token:
+            repository.access_token = access_token
+        project.repository = repository
+        project.branch = branch
+        db.session.add(repository)
+    elif project.repository:
+        db.session.delete(project.repository)
+
+    env_summary = {"created": 0, "updated": 0}
+    env_lines = request.form.get("env_lines") or ""
+    if env_lines.strip():
+        env_summary = _upsert_project_environment(project, env_lines)
+
+    try:
+        db.session.commit()
+        flash(
+            (
+                "Schnellstart-Konfiguration gespeichert. "
+                f"ENV erstellt: {env_summary['created']}, aktualisiert: {env_summary['updated']}."
+            ),
+            "success",
+        )
+    except Exception:
+        db.session.rollback()
+        logger.exception("Failed to save quick setup for project id=%s", project.id)
+        flash("Schnellstart-Konfiguration konnte nicht gespeichert werden.", "error")
+
     return redirect(url_for("dashboard.project_detail", project_id=project.id))
 
 
@@ -515,6 +684,9 @@ def project_detail(project_id: int):
     for deployment in deployments:
         steps = sorted(deployment.steps, key=lambda s: (s.order_index, s.id))
         failed_steps = [step for step in steps if step.status == "failed"]
+        latest_failed_step = failed_steps[-1] if failed_steps else None
+        latest_analysis = _extract_error_analysis(latest_failed_step)
+        fix_suggestion = _suggest_fix_issue(latest_analysis, latest_failed_step.name if latest_failed_step else None)
         target_server = _resolve_target_server(project, deployment)
 
         latest_step_error = None
@@ -527,12 +699,20 @@ def project_detail(project_id: int):
             "steps_count": len(steps),
             "failed_steps_count": len(failed_steps),
             "last_error": deployment.error_message or latest_step_error,
+            "error_analysis": latest_analysis,
+            "fix_suggestion": fix_suggestion,
             "target_machine": target_server,
         }
 
     return render_template(
         "dashboard/project_detail.html",
         project=project,
+        quickstart_env_lines=_project_env_lines(project),
+        quickstart_state={
+            "has_repository": bool(project.repository and (project.repository.repo_url or "").strip()),
+            "has_env": bool(project.environment_variables),
+            "has_domain": bool((project.domain or "").strip()),
+        },
         visible_servers=visible_servers,
         deployments=deployments,
         successful_deployments=successful_deployments,
@@ -572,7 +752,7 @@ def save_project_repository(project_id: int):
 
     repo_url = (request.form.get("repo_url") or "").strip()
     branch = (request.form.get("branch") or "").strip() or project.branch or "main"
-    provider = (request.form.get("provider") or "").strip() or None
+    provider = (request.form.get("provider") or "").strip() or _infer_repository_provider(repo_url)
     access_token = (request.form.get("access_token") or "").strip()
     is_private = (request.form.get("is_private") or "").strip() in {"1", "true", "on", "yes"}
 
@@ -615,6 +795,25 @@ def save_project_repository(project_id: int):
 @bp.post("/projects/<int:project_id>/env")
 def add_project_env(project_id: int):
     project = Project.query.get_or_404(project_id)
+    env_lines = request.form.get("env_lines") or ""
+
+    if env_lines.strip():
+        summary = _upsert_project_environment(project, env_lines)
+        try:
+            db.session.commit()
+            flash(
+                (
+                    "Environment-Variablen gespeichert. "
+                    f"Neu: {summary['created']}, aktualisiert: {summary['updated']}."
+                ),
+                "success",
+            )
+        except Exception:
+            db.session.rollback()
+            logger.exception("Failed to bulk upsert env vars for project id=%s", project.id)
+            flash("Environment-Variablen konnten nicht gespeichert werden.", "error")
+        return redirect(url_for("dashboard.project_detail", project_id=project.id))
+
     key = (request.form.get("key") or "").strip()
     value = request.form.get("value") or ""
 
@@ -631,10 +830,7 @@ def add_project_env(project_id: int):
         project_id=project.id,
         key=key,
         value=value,
-        is_secret=key.upper().endswith("KEY")
-        or key.upper().endswith("TOKEN")
-        or key.upper().endswith("SECRET")
-        or key.upper().endswith("PASSWORD"),
+        is_secret=_is_secret_env_key(key),
     )
     db.session.add(env_var)
     try:
@@ -810,7 +1006,7 @@ def deploy_project(project_id: int):
     deployment, created_ok = _create_and_queue_deployment(
         project,
         selected_server=selected_server,
-        mode=(request.form.get("mode") or "staging").strip() or "staging",
+        mode=(request.form.get("mode") or "production").strip() or "production",
         commit_sha=(request.form.get("commit_sha") or "").strip() or None,
         trigger_source="dashboard",
     )
@@ -912,17 +1108,95 @@ def deployment_detail(deployment_id: int):
         abort(404)
 
     steps = sorted(deployment.steps, key=lambda s: (s.order_index, s.id))
+    latest_failed_step = _latest_failed_step(deployment)
+    deployment_error_analysis = _extract_error_analysis(latest_failed_step)
+    fix_suggestion = _suggest_fix_issue(deployment_error_analysis, latest_failed_step.name if latest_failed_step else None)
     step_status = {step.name: step.status for step in steps}
     target_server = _resolve_target_server(deployment.project, deployment)
     return render_template(
         "dashboard/deployment_detail.html",
         deployment=deployment,
         steps=steps,
+        deployment_error_analysis=deployment_error_analysis,
+        fix_suggestion=fix_suggestion,
         target_server=target_server,
         provision_server_ok=step_status.get("provision_server") == "success",
         wait_for_ssh_ok=step_status.get("wait_for_ssh") == "success",
         healthcheck_ok=step_status.get("healthcheck") == "success",
     )
+
+
+@bp.post("/deployments/<int:deployment_id>/fix-issue")
+def fix_deployment_issue(deployment_id: int):
+    deployment = (
+        Deployment.query.options(
+            joinedload(Deployment.project).joinedload(Project.servers),
+            joinedload(Deployment.project).joinedload(Project.active_server),
+            joinedload(Deployment.server),
+            joinedload(Deployment.steps),
+        )
+        .filter_by(id=deployment_id)
+        .first()
+    )
+    if not deployment:
+        abort(404)
+
+    if deployment.status != "failed":
+        flash("Fix Issue ist nur fuer fehlgeschlagene Deployments verfuegbar.", "warning")
+        return redirect(url_for("dashboard.deployment_detail", deployment_id=deployment.id))
+
+    failed_step = _latest_failed_step(deployment)
+    error_analysis = _extract_error_analysis(failed_step)
+    suggestion = _suggest_fix_issue(error_analysis, failed_step.name if failed_step else None)
+    requested_action = (request.form.get("action") or "").strip()
+    action = requested_action or suggestion["action"]
+
+    project = deployment.project
+    target_server = _resolve_target_server(project, deployment)
+    if action in {"restart_container", "reload_nginx"}:
+        if target_server is None or not target_server.ipv4:
+            flash("Fix Issue konnte nicht ausgefuehrt werden: Kein Zielserver mit gueltiger IP gefunden.", "error")
+            return redirect(url_for("dashboard.deployment_detail", deployment_id=deployment.id))
+
+    executor = DeploymentExecutor()
+
+    if action == "restart_container":
+        deploy_dir = f"/opt/orbital/{project.slug}"
+        result = executor.ssh.run_one(target_server.ipv4, f"docker-compose -f {deploy_dir}/docker-compose.yml restart web")
+        if result.return_code == 0:
+            flash("Fix Issue ausgefuehrt: Web-Container wurde neu gestartet.", "success")
+        else:
+            flash(
+                "Fix Issue fehlgeschlagen: Container konnte nicht neu gestartet werden. "
+                f"stderr: {(result.stderr or '').strip() or '-'}",
+                "error",
+            )
+        return redirect(url_for("dashboard.deployment_detail", deployment_id=deployment.id))
+
+    if action == "reload_nginx":
+        results = executor.ssh.run_many(target_server.ipv4, ["nginx -t", "systemctl reload nginx"])
+        failed = [item for item in results if item.return_code != 0]
+        if not failed:
+            flash("Fix Issue ausgefuehrt: Nginx-Konfiguration geprueft und neu geladen.", "success")
+        else:
+            details = "; ".join((item.stderr or "").strip() or item.command for item in failed)
+            flash(f"Fix Issue fehlgeschlagen: Nginx konnte nicht neu geladen werden. {details}", "error")
+        return redirect(url_for("dashboard.deployment_detail", deployment_id=deployment.id))
+
+    preferred_server = target_server
+    new_deployment, created_ok = _create_and_queue_deployment(
+        project,
+        selected_server=preferred_server,
+        mode="production",
+        commit_sha=None,
+        trigger_source="dashboard-fix-issue",
+    )
+    if not created_ok or new_deployment is None:
+        flash("Fix Issue konnte nicht ausgefuehrt werden: Redeploy konnte nicht gestartet werden.", "error")
+        return redirect(url_for("dashboard.deployment_detail", deployment_id=deployment.id))
+
+    flash("Fix Issue ausgefuehrt: Redeploy wurde gestartet.", "success")
+    return redirect(url_for("dashboard.deployment_detail", deployment_id=new_deployment.id))
 
 
 @bp.get("/deployments/<int:deployment_id>/status")

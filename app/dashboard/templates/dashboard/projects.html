@@ -3,6 +3,21 @@
 {% block title %}Projekte | Dashboard{% endblock %}
 
 {% block content %}
+<div class="card hero">
+    <h1 style="margin-bottom: 8px;">Build fast. goflori deployt.</h1>
+    <p style="max-width: 760px;">
+        Du baust den Prototypen, Flori kuemmert sich um den DevOps-Teil.
+        Starte mit Projektname + Repository-Link und veroeffentliche in wenigen Klicks.
+    </p>
+    <div class="flori-tip">
+        <div class="flori-avatar">F</div>
+        <div>
+            <strong>Flori sagt:</strong> Wenn du eine Domain noch nicht hast, kein Problem.
+            Leerlassen, deployen, spaeter verbinden.
+        </div>
+    </div>
+</div>
+
 <div class="row">
     <div class="col" style="flex: 2;">
         <div class="card">
@@ -40,75 +55,60 @@
     </div>
 
     <div class="col" style="flex: 1;">
-        <div class="card">
-            <h2>Projekt anlegen</h2>
+        <div class="card hero">
+            <h2>Schnellstart</h2>
+            <p>
+                Fuer den ersten Deploy brauchst du nur Projektname und den Link zu deinem Repository.
+                goflori verwendet automatisch sinnvolle Infrastruktur-Defaults.
+            </p>
+            <p class="muted">
+                Standardwerte: {{ hetzner_defaults.default_server_type }}, {{ hetzner_defaults.default_location }}, {{ hetzner_defaults.default_image }}
+            </p>
             <form method="post" action="{{ url_for('dashboard.create_project') }}">
-                <label for="name">Name *</label>
+                <label for="name">Projektname *</label>
                 <input id="name" name="name" required>
 
-                <label for="slug">Slug (optional)</label>
-                <input id="slug" name="slug" placeholder="wird automatisch erzeugt">
-
-                <label for="framework">Framework</label>
-                <input id="framework" name="framework" placeholder="flask, node, django, ...">
-
-                <label for="domain">Domain</label>
-                <input id="domain" name="domain" placeholder="example.com">
-
-                <label for="desired_server_type">Server Type (Projekt-Override)</label>
-                <input
-                    id="desired_server_type"
-                    name="desired_server_type"
-                    value="{{ hetzner_defaults.default_server_type or '' }}"
-                    placeholder="z. B. cx22"
-                >
-
-                <label for="desired_location">Location (Projekt-Override)</label>
-                <input
-                    id="desired_location"
-                    name="desired_location"
-                    value="{{ hetzner_defaults.default_location or '' }}"
-                    placeholder="z. B. nbg1"
-                >
-
-                <label for="desired_image">Image (Projekt-Override)</label>
-                <input
-                    id="desired_image"
-                    name="desired_image"
-                    value="{{ hetzner_defaults.default_image or '' }}"
-                    placeholder="z. B. ubuntu-24.04"
-                >
-
-                <label for="environment">Environment</label>
-                <input id="environment" name="environment" value="production">
-
-                <label for="branch">Branch</label>
-                <input id="branch" name="branch" value="main">
-
-                <label for="repository_provider">Repository Provider</label>
-                <input id="repository_provider" name="repository_provider" value="github">
-
-                <label for="repository_url">Repository URL</label>
+                <label for="repository_url">Repository-Link</label>
                 <input id="repository_url" name="repository_url" placeholder="https://github.com/org/repo.git">
 
-                <label for="repository_branch">Repository Branch</label>
-                <input id="repository_branch" name="repository_branch" value="main">
+                <label for="domain">Eigene Domain (optional)</label>
+                <input id="domain" name="domain" placeholder="z. B. app.example.com">
 
-                <label for="repository_access_token">Access Token (optional)</label>
-                <input id="repository_access_token" name="repository_access_token" placeholder="token nur fuer private repos" autocomplete="off">
+                <label for="env_lines">App-Einstellungen (optional)</label>
+                <textarea id="env_lines" name="env_lines" placeholder="DATABASE_URL=...&#10;API_TOKEN=..."></textarea>
 
-                <label style="display:flex;align-items:center;gap:.5rem;margin-top:.5rem;">
-                    <input type="checkbox" name="repository_is_private" value="1">
-                    Repository ist privat
-                </label>
+                <details>
+                    <summary>Erweiterte Optionen</summary>
 
-                <label for="env_lines">Environment-Variablen (eine pro Zeile: KEY=VALUE)</label>
-                <textarea id="env_lines" name="env_lines" placeholder="DATABASE_URL=...&#10;REDIS_URL=..."></textarea>
+                    <label for="slug">Technischer Kurzname (optional)</label>
+                    <input id="slug" name="slug" placeholder="wird automatisch erzeugt">
+
+                    <label for="repository_branch">Branch</label>
+                    <input id="repository_branch" name="repository_branch" value="main">
+
+                    <label for="repository_access_token">Access Token (nur private Repos)</label>
+                    <input id="repository_access_token" name="repository_access_token" placeholder="token" autocomplete="off">
+
+                    <label style="display:flex;align-items:center;gap:.5rem;margin-top:.5rem;">
+                        <input type="checkbox" name="repository_is_private" value="1">
+                        Repository ist privat
+                    </label>
+                </details>
 
                 <div class="actions">
-                    <button type="submit">Projekt speichern</button>
+                    <button type="submit" name="create_action" value="create_and_deploy">Projekt anlegen und sofort deployen</button>
+                    <button type="submit" name="create_action" value="create" class="secondary">Nur Projekt anlegen</button>
                 </div>
             </form>
+
+            <div class="flori-tip">
+                <div class="flori-avatar">F</div>
+                <div>
+                    <strong>Flori Quick UX:</strong>
+                    Der erste Button legt an und startet direkt ein Deployment.
+                    Nutze "Nur Projekt anlegen", wenn du erst Einstellungen pruefen willst.
+                </div>
+            </div>
         </div>
     </div>
 </div>

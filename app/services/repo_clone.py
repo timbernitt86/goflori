@@ -40,7 +40,7 @@ class LocalRepoCloneService:
             self.clone_root = self._resolve_clone_root(configured_root)
         else:
             # Default to /tmp/orbital/repos on Unix; use system temp on Windows.
-            if Path("/tmp").exists():
+            if os.name != "nt" and Path("/tmp").exists():
                 self.clone_root = Path("/tmp") / "orbital" / "repos"
             else:
                 self.clone_root = Path(tempfile.gettempdir()) / "orbital" / "repos"

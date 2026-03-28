@@ -4,6 +4,7 @@ import logging
 
 from app.extensions import db
 from app.models import ActivityLog, Deployment, DeploymentStep, Project, Server
+from app.services.error_analysis import analyze_deployment_failure
 from app.services.repo_analyzer import RepoAnalyzer
 from app.services.repo_clone import LocalRepoCloneService
 from app.services.hetzner import HetznerAPIError
@@ -180,13 +181,33 @@ def _finish_step_failed(
     step.stdout = stdout
     step.stderr = stderr
     step.exit_code = exit_code
-    step.json_details = metadata
+    resolved_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+    error_analysis = analyze_deployment_failure(
+        step_name=name,
+        stdout=stdout,
+        stderr=stderr,
+        error_category=resolved_metadata.get("error_category"),
+        exception_type=resolved_metadata.get("exception_type"),
+    )
+    resolved_metadata["error_analysis"] = error_analysis
+    step.json_details = resolved_metadata
     # Keep legacy fields in sync.
     step.output = stdout
     step.error_message = stderr
     db.session.commit()
     logger.error("deployment=%s step=%s status=failed exit_code=%s stderr=%s", deployment.id, name, exit_code, (stderr or "")[:500])
     return step
+
+
+def _latest_error_analysis(deployment: Deployment) -> dict | None:
+    for step in sorted(deployment.steps, key=lambda s: (s.order_index, s.id), reverse=True):
+        if step.status != "failed":
+            continue
+        details = step.json_details if isinstance(step.json_details, dict) else {}
+        analysis = details.get("error_analysis") if isinstance(details, dict) else None
+        if isinstance(analysis, dict) and analysis.get("error_type"):
+            return analysis
+    return None
 
 
 def _assert_command_results_ok(step_name: str, results) -> None:
@@ -692,7 +713,16 @@ def run_deployment_task(deployment_id: int):
         _fail_running_steps(deployment, exc)
         deployment.status = "failed"
         deployment.successful = False
-        deployment.error_message = str(exc)
+        analysis = _latest_error_analysis(deployment)
+        if analysis:
+            deployment.error_message = (
+                f"{exc}\n\n"
+                f"Automatische Analyse: {analysis.get('error_type', '-')}; "
+                f"Ursache: {analysis.get('probable_cause', '-')}; "
+                f"Fix: {analysis.get('suggested_fix', '-')}"
+            )
+        else:
+            deployment.error_message = str(exc)
         db.session.add(
             ActivityLog(project_id=project.id, action="deployment.failed", actor="system", message=str(exc))
         )
