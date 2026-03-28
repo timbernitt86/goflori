@@ -123,6 +123,7 @@ class DeploymentExecutor:
                 )
             )
         else:
+            # Nur Fallback-App erzeugen, wenn kein echtes Repository vorliegt und nur im repo/-Verzeichnis
             fallback_files = [
                 f"cat <<'EOF' > {repo_snapshot_dir}/app.py\nfrom flask import Flask\napp = Flask(__name__)\n\n@app.get('/')\ndef index():\n    return 'Orbital fallback app is running'\nEOF",
                 f"cat <<'EOF' > {repo_snapshot_dir}/requirements.txt\nflask\ngunicorn\nEOF",
