@@ -165,6 +165,7 @@ class DeploymentExecutor:
         commands = [
             f"docker-compose -f {deploy_dir}/docker-compose.yml down --remove-orphans",
             f"docker-compose -f {deploy_dir}/docker-compose.yml up -d --build --force-recreate",
+            # Fallback command: use correct import path for create_app (from app/__init__.py)
             f"docker-compose -f {deploy_dir}/docker-compose.yml exec -T web sh -lc 'flask --app run.py db upgrade || python -c \"from app import create_app; from app.extensions import db; app=create_app(); ctx=app.app_context(); ctx.push(); db.create_all(); ctx.pop()\"'",
         ]
         return self.ssh.run_many(host, commands)
