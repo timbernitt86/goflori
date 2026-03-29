@@ -19,7 +19,7 @@ class Deployment(TimestampMixin, db.Model):
     output = db.Column(db.Text, nullable=True)
     error_message = db.Column(db.Text, nullable=True)
 
-    project = db.relationship("Project", back_populates="deployments")
+    project = db.relationship("Project", back_populates="deployments", foreign_keys=[project_id])
     server = db.relationship("Server", foreign_keys=[server_id])
     steps = db.relationship("DeploymentStep", back_populates="deployment", cascade="all, delete-orphan")
 
