@@ -540,15 +540,25 @@ def run_deployment_task(deployment_id: int):
             raise
 
         if ctx.is_update:
-            # Server is already live: docker/nginx/certbot are installed. Skip the slow
-            # apt-get reinstall. Mark the step as succeeded without running it.
-            _finish_step_success(
-                deployment,
-                "prepare_host",
-                stdout="action=skipped\nreason=server_already_live_update_deploy",
-                exit_code=0,
-                metadata={"action": "skipped", "reason": "update_deploy"},
-            )
+            # Verify Docker is actually installed before skipping prepare_host.
+            # A server may be marked "running" in the DB but still lack Docker
+            # (e.g. freshly provisioned or re-assigned server).
+            docker_check = executor.ssh.run_one(server.ipv4 or "127.0.0.1", "docker ps")
+            if docker_check.return_code == 0:
+                _finish_step_success(
+                    deployment,
+                    "prepare_host",
+                    stdout="action=skipped\nreason=server_already_live_update_deploy\ndocker_check=ok",
+                    exit_code=0,
+                    metadata={"action": "skipped", "reason": "update_deploy"},
+                )
+            else:
+                # Docker not found – run full host preparation despite is_update flag.
+                logger.info(
+                    "deployment=%s server=%s docker not available (rc=%s), running prepare_host",
+                    deployment.id, server.id, docker_check.return_code,
+                )
+                _run_command_step(deployment, "prepare_host", lambda: executor.prepare_host(server.ipv4 or "127.0.0.1"))
         else:
             _run_command_step(deployment, "prepare_host", lambda: executor.prepare_host(server.ipv4 or "127.0.0.1"))
 
