@@ -164,6 +164,9 @@
 <div class="card">
     <h3>Steps und Logs</h3>
     {% if steps %}
+        <div style="margin-bottom:10px;">
+            <button type="button" id="toggle-all-steps" style="font-size:13px;padding:4px 12px;">Alle aufklappen</button>
+        </div>
         <style>
             .step-details { border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 10px; background: #fff; }
             .step-details.failed { border-color: #efb1b1; border-left: 4px solid #c81e1e; background: #fff6f6; }
@@ -188,7 +191,7 @@
             {% set started_at = step.started_at or step.created_at %}
             {% set finished_at = step.finished_at if step.finished_at else ('-' if not is_terminal else step.updated_at) %}
 
-            <details class="step-details {% if step.status == 'failed' %}failed{% endif %}" {% if step.status == 'failed' %}open{% endif %}>
+            <details class="step-details {% if step.status == 'failed' %}failed{% endif %}">
                 <summary class="step-summary">
                     <span><strong>{{ step.order_index }}. {{ step.name }}</strong></span>
                     <span class="badge {{ step_status_class }}">{{ step.status }}</span>
@@ -346,6 +349,19 @@
 })();
 </script>
 {% endif %}
+
+<script>
+(() => {
+    const btn = document.getElementById("toggle-all-steps");
+    if (!btn) return;
+    btn.addEventListener("click", () => {
+        const details = document.querySelectorAll(".step-details");
+        const anyOpen = Array.from(details).some(d => d.open);
+        details.forEach(d => { d.open = !anyOpen; });
+        btn.textContent = anyOpen ? "Alle aufklappen" : "Alle einklappen";
+    });
+})();
+</script>
 
 <style>
 .progress-wrap { margin-top: 10px; }
