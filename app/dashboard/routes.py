@@ -1444,6 +1444,53 @@ def fix_deployment_issue(deployment_id: int):
     return redirect(url_for("dashboard.deployment_detail", deployment_id=new_deployment.id))
 
 
+@bp.get("/projects/<int:project_id>/ssl-info")
+def project_ssl_info(project_id: int):
+    project = Project.query.options(
+        joinedload(Project.servers),
+        joinedload(Project.active_server),
+    ).filter_by(id=project_id).first()
+    if not project:
+        abort(404)
+
+    target_server, error_message = _resolve_selected_project_server(project, request.args.get("server_id"))
+    if error_message:
+        return jsonify({"error": error_message}), 400
+
+    result = DeploymentExecutor().ssh.run_one(target_server.ipv4, "certbot certificates")
+    raw = (result.stdout or "").strip()
+
+    certs = []
+    current: dict | None = None
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Certificate Name:"):
+            if current is not None:
+                certs.append(current)
+            current = {"name": stripped.split(":", 1)[1].strip()}
+        elif current is not None:
+            if stripped.startswith("Domains:"):
+                current["domains"] = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("Expiry Date:"):
+                current["expiry"] = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("Certificate Path:"):
+                current["certificate_path"] = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("Private Key Path:"):
+                current["private_key_path"] = stripped.split(":", 1)[1].strip()
+    if current is not None:
+        certs.append(current)
+
+    return jsonify({
+        "project_id": project.id,
+        "server": {"id": target_server.id, "name": target_server.name, "ipv4": target_server.ipv4},
+        "certificates": certs,
+        "raw_output": raw,
+        "exit_code": result.return_code,
+        "stderr": result.stderr,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    }), (200 if result.return_code == 0 else 500)
+
+
 @bp.get("/deployments/<int:deployment_id>/status")
 def deployment_status(deployment_id: int):
     deployment = (

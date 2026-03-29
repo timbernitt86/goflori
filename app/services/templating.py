@@ -89,16 +89,25 @@ EXPOSE {app_port}
 CMD ["sh", "-c", "gunicorn -b 0.0.0.0:{app_port} {gunicorn_target} --access-logfile - --error-logfile - || python -m flask run --host=0.0.0.0 --port={app_port} || python -m http.server {app_port}"]
 """
 
+        # Volume name is stable across redeploys so the app's data (e.g. SQLite DB) persists.
+        volume_name = f"orbital-{app_name}-data"
         compose = f"""services:
   web:
     build: .
     container_name: {app_name}-web
     restart: unless-stopped
     ports:
-            - "127.0.0.1:{public_port}:{app_port}"
+      - "127.0.0.1:{public_port}:{app_port}"
     # Runtime ENV values are injected into this file during upload_artifacts.
     env_file:
       - .env
+    volumes:
+      - app-data:/app/instance
+      - app-data:/app/data
+
+volumes:
+  app-data:
+    name: {volume_name}
 """
 
         server_name = public_domain or "_"

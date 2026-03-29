@@ -430,7 +430,43 @@
     </div>
 
     <div class="card">
-        <h3 class="section-title">6. Infrastruktur und Server</h3>
+        <h3 class="section-title">6. SSL-Zertifikat</h3>
+        <p class="section-subtitle">Zeigt alle Let's-Encrypt-Zertifikate auf dem Server inkl. Gueltigkeitsdatum.</p>
+
+        {% if not project.domain %}
+            <p class="muted">Keine Domain konfiguriert – SSL-Zertifikat nicht verfuegbar.</p>
+        {% elif not latest_server %}
+            <p class="muted">Kein Server zugeordnet – Zertifikatsabfrage nicht moeglich.</p>
+        {% else %}
+            <div class="action-row" style="margin-bottom: 10px;">
+                <select id="ssl_server_id" style="min-width: 220px;">
+                    <option value="">Automatisch (aktiver Server)</option>
+                    {% for server in visible_servers|sort(attribute='created_at', reverse=true) %}
+                        <option value="{{ server.id }}">{{ server.name }} | {{ server.ipv4 or '-' }}</option>
+                    {% endfor %}
+                </select>
+                <button type="button" id="load_ssl_btn" class="secondary">SSL-Zertifikat abrufen</button>
+            </div>
+            <p id="ssl_meta" class="muted" style="font-size: 12px;"></p>
+            <div id="ssl_certs_output" style="display:none;">
+                <table class="dense-table" id="ssl_certs_table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Domains</th>
+                            <th>Gueltig bis</th>
+                            <th>Zertifikat-Pfad</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ssl_certs_body"></tbody>
+                </table>
+            </div>
+            <pre id="ssl_raw_output" style="display:none; max-height: 200px; overflow: auto;"></pre>
+        {% endif %}
+    </div>
+
+    <div class="card">
+        <h3 class="section-title">7. Infrastruktur und Server</h3>
         <p class="section-subtitle">Seltener benoetigte Infrastrukturthemen sind gesammelt und eingeklappt.</p>
 
         {% if latest_server %}
@@ -623,6 +659,52 @@
             }
         });
     }
+
+    // SSL cert fetch
+    (() => {
+        const sslBtn = document.getElementById("load_ssl_btn");
+        if (!sslBtn) return;
+        const sslServerSelect = document.getElementById("ssl_server_id");
+        const sslMeta = document.getElementById("ssl_meta");
+        const sslCertsOutput = document.getElementById("ssl_certs_output");
+        const sslCertsBody = document.getElementById("ssl_certs_body");
+        const sslRaw = document.getElementById("ssl_raw_output");
+        const sslBaseUrl = "{{ url_for('dashboard.project_ssl_info', project_id=project.id) }}";
+
+        sslBtn.addEventListener("click", async () => {
+            sslBtn.disabled = true;
+            sslBtn.textContent = "Laedt...";
+            sslMeta.textContent = "";
+            sslCertsOutput.style.display = "none";
+            sslRaw.style.display = "none";
+            try {
+                const serverId = sslServerSelect ? sslServerSelect.value : "";
+                const url = serverId ? sslBaseUrl + "?server_id=" + encodeURIComponent(serverId) : sslBaseUrl;
+                const response = await fetch(url, { cache: "no-store" });
+                const data = await response.json();
+                sslMeta.textContent = "Server: " + data.server.name + " (" + data.server.ipv4 + ") | exit_code: " + data.exit_code + " | " + data.fetched_at;
+                if (data.certificates && data.certificates.length > 0) {
+                    sslCertsBody.innerHTML = "";
+                    data.certificates.forEach(cert => {
+                        const expiry = cert.expiry || "-";
+                        const isExpiringSoon = expiry.includes("INVALID") || (expiry.includes("VALID:") && parseInt(expiry.match(/\d+/) || ["99"]) < 14);
+                        const row = document.createElement("tr");
+                        row.innerHTML = `<td>${cert.name || "-"}</td><td>${cert.domains || "-"}</td><td style="${isExpiringSoon ? "color:#c0392b;font-weight:bold;" : ""}">${expiry}</td><td style="font-size:11px;">${cert.certificate_path || "-"}</td>`;
+                        sslCertsBody.appendChild(row);
+                    });
+                    sslCertsOutput.style.display = "";
+                } else {
+                    sslRaw.textContent = data.raw_output || data.stderr || "Keine Zertifikate gefunden.";
+                    sslRaw.style.display = "";
+                }
+            } catch (err) {
+                sslMeta.textContent = "Fehler: " + String(err);
+            } finally {
+                sslBtn.disabled = false;
+                sslBtn.textContent = "SSL-Zertifikat abrufen";
+            }
+        });
+    })();
 
     const button = document.getElementById("load_runtime_logs_btn");
     const serverSelect = document.getElementById("runtime_log_server_id");

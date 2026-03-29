@@ -23,6 +23,7 @@ class PipelineContext:
     region: str = "nbg1"
     app_port: int = 8000
     host_port: int = 8000
+    is_update: bool = False  # True when redeploying to an existing live server
 
 
 @dataclass
@@ -47,7 +48,7 @@ class DeploymentExecutor:
     def prepare_host(self, host: str):
         commands = [
             "apt-get update -y",
-            "apt-get install -y git docker.io docker-compose nginx certbot python3-certbot-nginx",
+            "apt-get install -y git docker.io docker-compose-plugin nginx certbot python3-certbot-nginx",
             "systemctl enable docker",
             "systemctl start docker",
         ]
@@ -172,10 +173,9 @@ class DeploymentExecutor:
         results.extend(self.ssh.run_many(host, commands))
         return results
 
-    def start_containers(self, host: str, ctx: PipelineContext):
-        deploy_dir = f"/opt/orbital/{ctx.slug}"
-        migrate_command = (
-            "docker-compose -f "
+    def _db_migrate_command(self, deploy_dir: str) -> str:
+        return (
+            "docker compose -f "
             f"{deploy_dir}/docker-compose.yml exec -T web sh -lc "
             "'flask --app run db-upgrade "
             "|| flask --app run.py db-upgrade "
@@ -183,10 +183,37 @@ class DeploymentExecutor:
             "|| flask --app app.py db upgrade "
             "|| echo \"Skipping DB migration: no compatible Flask app/command found\"'"
         )
+
+    def start_containers(self, host: str, ctx: PipelineContext):
+        """Initial deploy: stop any existing containers, build fresh, run DB migration."""
+        deploy_dir = f"/opt/orbital/{ctx.slug}"
         commands = [
-            f"docker-compose -f {deploy_dir}/docker-compose.yml down --remove-orphans",
-            f"docker-compose -f {deploy_dir}/docker-compose.yml up -d --build --force-recreate",
-            migrate_command,
+            # --remove-orphans cleans up stale services; named volumes are NOT touched.
+            f"docker compose -f {deploy_dir}/docker-compose.yml down --remove-orphans",
+            # Force-remove any leftover containers by name pattern (handles v1->v2 naming conflicts).
+            f"docker ps -a --filter 'name={ctx.slug}' -q | xargs -r docker rm -f",
+            f"docker compose -f {deploy_dir}/docker-compose.yml up -d --build --force-recreate",
+            self._db_migrate_command(deploy_dir),
+        ]
+        return self.ssh.run_many(host, commands)
+
+    def update_containers(self, host: str, ctx: PipelineContext):
+        """Update deploy: rebuild image and restart with zero DB wipe.
+
+        Named volumes (app data / SQLite DB) are preserved because we never
+        call 'docker-compose down'. The running container is replaced in-place
+        by 'docker-compose up --build --force-recreate', and DB migrations are
+        applied afterwards.
+        """
+        deploy_dir = f"/opt/orbital/{ctx.slug}"
+        commands = [
+            # Force-remove any leftover containers by name pattern (handles v1->v2 naming conflicts).
+            f"docker ps -a --filter 'name={ctx.slug}' -q | xargs -r docker rm -f",
+            # Rebuild image from updated repo snapshot and replace the container.
+            # Named volumes are NOT affected - the DB survives.
+            f"docker compose -f {deploy_dir}/docker-compose.yml up -d --build --force-recreate",
+            # Apply any new DB migrations (add columns / create tables).
+            self._db_migrate_command(deploy_dir),
         ]
         return self.ssh.run_many(host, commands)
 
@@ -236,7 +263,7 @@ class DeploymentExecutor:
     def cleanup_project_from_server(self, host: str, ctx: PipelineContext):
         deploy_dir = f"/opt/orbital/{ctx.slug}"
         commands = [
-            f"docker-compose -f {deploy_dir}/docker-compose.yml down --volumes --remove-orphans || true",
+            f"docker compose -f {deploy_dir}/docker-compose.yml down --volumes --remove-orphans || true",
             f"rm -f /etc/nginx/sites-enabled/{ctx.slug}.conf",
             "nginx -t",
             "systemctl reload nginx",
