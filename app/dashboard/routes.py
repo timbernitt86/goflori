@@ -1491,6 +1491,40 @@ def project_ssl_info(project_id: int):
     }), (200 if result.return_code == 0 else 500)
 
 
+@bp.post("/projects/<int:project_id>/ssl-run")
+def project_ssl_run(project_id: int):
+    project = Project.query.options(
+        joinedload(Project.servers),
+        joinedload(Project.active_server),
+    ).filter_by(id=project_id).first()
+    if not project:
+        abort(404)
+
+    if not project.domain:
+        return jsonify({"error": "Keine Domain konfiguriert."}), 400
+
+    target_server, error_message = _resolve_selected_project_server(
+        project, request.form.get("server_id") or request.args.get("server_id")
+    )
+    if error_message:
+        return jsonify({"error": error_message}), 400
+
+    domain = project.domain.strip()
+    executor = DeploymentExecutor()
+    result = executor.ssh.run_one(
+        target_server.ipv4,
+        f"certbot --nginx -d {domain} --non-interactive --agree-tos -m admin@{domain}",
+    )
+    return jsonify({
+        "project_id": project.id,
+        "domain": domain,
+        "server": {"id": target_server.id, "name": target_server.name, "ipv4": target_server.ipv4},
+        "exit_code": result.return_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }), (200 if result.return_code == 0 else 500)
+
+
 @bp.get("/deployments/<int:deployment_id>/status")
 def deployment_status(deployment_id: int):
     deployment = (

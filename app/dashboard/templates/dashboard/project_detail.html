@@ -446,6 +446,7 @@
                     {% endfor %}
                 </select>
                 <button type="button" id="load_ssl_btn" class="secondary">SSL-Zertifikat abrufen</button>
+                <button type="button" id="run_certbot_btn">Zertifikat erstellen / erneuern</button>
             </div>
             <p id="ssl_meta" class="muted" style="font-size: 12px;"></p>
             <div id="ssl_certs_output" style="display:none;">
@@ -702,6 +703,41 @@
             } finally {
                 sslBtn.disabled = false;
                 sslBtn.textContent = "SSL-Zertifikat abrufen";
+            }
+        });
+    })();
+
+    // SSL certbot run
+    (() => {
+        const btn = document.getElementById("run_certbot_btn");
+        if (!btn) return;
+        const sslServerSelect = document.getElementById("ssl_server_id");
+        const sslMeta = document.getElementById("ssl_meta");
+        const runUrl = "{{ url_for('dashboard.project_ssl_run', project_id=project.id) }}";
+
+        btn.addEventListener("click", async () => {
+            if (!confirm("Certbot jetzt auf dem Server ausfuehren? Dies erstellt oder erneuert das Let\'s-Encrypt-Zertifikat fuer {{ project.domain }}.")) return;
+            btn.disabled = true;
+            btn.textContent = "Laedt...";
+            sslMeta.textContent = "certbot wird ausgefuehrt...";
+            try {
+                const serverId = sslServerSelect ? sslServerSelect.value : "";
+                const body = new URLSearchParams();
+                if (serverId) body.set("server_id", serverId);
+                const response = await fetch(runUrl, { method: "POST", body });
+                const data = await response.json();
+                if (data.exit_code === 0) {
+                    sslMeta.textContent = "Zertifikat erfolgreich ausgestellt/erneuert fuer " + data.domain + " auf " + data.server.ipv4;
+                } else {
+                    sslMeta.textContent = "certbot fehlgeschlagen (exit_code=" + data.exit_code + "): " + (data.stderr || data.stdout || "-");
+                    sslMeta.style.color = "#c81e1e";
+                }
+            } catch (err) {
+                sslMeta.textContent = "Fehler: " + String(err);
+                sslMeta.style.color = "#c81e1e";
+            } finally {
+                btn.disabled = false;
+                btn.textContent = "Zertifikat erstellen / erneuern";
             }
         });
     })();

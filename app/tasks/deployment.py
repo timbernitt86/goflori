@@ -643,99 +643,89 @@ def run_deployment_task(deployment_id: int):
             lambda: executor.configure_reverse_proxy(server.ipv4 or "127.0.0.1", ctx),
         )
 
-        if ctx.is_update:
-            # DNS and SSL are already configured on update deploys – skip.
-            for skip_step in ("check_dns", "run_certbot", "verify_https"):
-                _finish_step_success(
-                    deployment,
-                    skip_step,
-                    stdout=f"action=skipped\nreason=update_deploy\nserver_already_configured",
-                    exit_code=0,
-                    metadata={"action": "skipped", "reason": "update_deploy"},
-                )
-
-        if not ctx.is_update:
-            _start_step(deployment, "check_dns")
-            dns_result = executor.check_dns(ctx.domain, server.ipv4)
-            dns_output = (
+        # DNS check and SSL must run on every deploy (initial AND update).
+        # Skipping on update caused false "success" when domain pointed to wrong IP.
+        _start_step(deployment, "check_dns")
+        dns_result = executor.check_dns(ctx.domain, server.ipv4)
+        dns_output = (
+            f"resolved_ip={dns_result.resolved_ip}\n"
+            f"expected_ip={dns_result.expected_ip}\n"
+            f"matches={dns_result.matches}"
+        )
+        if not ctx.domain:
+            _finish_step_success(
+                deployment,
+                "check_dns",
+                stdout="resolved_ip=-\nexpected_ip=-\nmatches=False\ninfo=no_domain_configured",
+                exit_code=0,
+                metadata={"matches": False, "info": "no_domain_configured"},
+            )
+            _finish_step_success(
+                deployment,
+                "run_certbot",
+                stdout="SSL skipped: no domain configured.",
+                exit_code=0,
+                metadata={"skipped": True, "reason": "no_domain_configured"},
+            )
+            _finish_step_success(
+                deployment,
+                "verify_https",
+                stdout="HTTPS verification skipped: no domain configured.",
+                exit_code=0,
+                metadata={"skipped": True, "reason": "no_domain_configured"},
+            )
+        elif not dns_result.matches:
+            mismatch_message = (
+                "DNS-Pruefung fehlgeschlagen: Domain zeigt nicht auf den Zielserver.\n"
                 f"resolved_ip={dns_result.resolved_ip}\n"
                 f"expected_ip={dns_result.expected_ip}\n"
-                f"matches={dns_result.matches}"
+                "Bitte A-Record korrigieren und Deployment erneut starten."
             )
-            if not ctx.domain:
-                _finish_step_success(
-                    deployment,
-                    "check_dns",
-                    stdout="resolved_ip=-\nexpected_ip=-\nmatches=False\ninfo=no_domain_configured",
-                    exit_code=0,
-                    metadata={"matches": False, "info": "no_domain_configured"},
-                )
-                _finish_step_success(
-                    deployment,
-                    "run_certbot",
-                    stdout="SSL skipped: no domain configured.",
-                    exit_code=0,
-                    metadata={"skipped": True, "reason": "no_domain_configured"},
-                )
-                _finish_step_success(
-                    deployment,
-                    "verify_https",
-                    stdout="HTTPS verification skipped: no domain configured.",
-                    exit_code=0,
-                    metadata={"skipped": True, "reason": "no_domain_configured"},
-                )
-            elif not dns_result.matches:
-                mismatch_message = (
-                    "DNS-Pruefung fehlgeschlagen: Domain zeigt nicht auf den Zielserver.\n"
+            _finish_step_failed(
+                deployment,
+                "check_dns",
+                stdout=dns_output,
+                stderr=mismatch_message,
+                exit_code=1,
+                metadata={
+                    "error_category": "dns_error",
+                    "matches": False,
+                    "resolved_ip": dns_result.resolved_ip,
+                    "expected_ip": dns_result.expected_ip,
+                },
+            )
+            _finish_step_failed(
+                deployment,
+                "run_certbot",
+                stdout=(
+                    "certbot nicht gestartet, weil DNS-Pruefung fehlgeschlagen ist.\n"
                     f"resolved_ip={dns_result.resolved_ip}\n"
                     f"expected_ip={dns_result.expected_ip}\n"
-                    "Bitte A-Record korrigieren und Deployment erneut starten."
-                )
-                _finish_step_failed(
-                    deployment,
-                    "check_dns",
-                    stdout=dns_output,
-                    stderr=mismatch_message,
-                    exit_code=1,
-                    metadata={
-                        "error_category": "dns_error",
-                        "matches": False,
-                        "resolved_ip": dns_result.resolved_ip,
-                        "expected_ip": dns_result.expected_ip,
-                    },
-                )
-                _finish_step_failed(
-                    deployment,
-                    "run_certbot",
-                    stdout=(
-                        "certbot nicht gestartet, weil DNS-Pruefung fehlgeschlagen ist.\n"
-                        f"resolved_ip={dns_result.resolved_ip}\n"
-                        f"expected_ip={dns_result.expected_ip}\n"
-                        "matches=False"
-                    ),
-                    stderr="certbot skipped due to DNS mismatch",
-                    exit_code=1,
-                    metadata={"error_category": "certbot_error", "skipped": True, "reason": "dns_mismatch"},
-                )
-                _finish_step_failed(
-                    deployment,
-                    "verify_https",
-                    stdout="HTTPS verification skipped, because certbot was not executed.",
-                    stderr="verify_https skipped due to DNS mismatch",
-                    exit_code=1,
-                    metadata={"error_category": "healthcheck_error", "skipped": True, "reason": "dns_mismatch"},
-                )
-                raise RuntimeError(mismatch_message)
-            else:
-                _finish_step_success(
-                    deployment,
-                    "check_dns",
-                    stdout=dns_output,
-                    exit_code=0,
-                    metadata={"matches": True, "resolved_ip": dns_result.resolved_ip, "expected_ip": dns_result.expected_ip},
-                )
-                _run_command_step(deployment, "run_certbot", lambda: executor.run_certbot(server.ipv4 or "127.0.0.1", ctx.domain))
-                _run_command_step(deployment, "verify_https", lambda: executor.verify_https(server.ipv4 or "127.0.0.1", ctx.domain))
+                    "matches=False"
+                ),
+                stderr="certbot skipped due to DNS mismatch",
+                exit_code=1,
+                metadata={"error_category": "certbot_error", "skipped": True, "reason": "dns_mismatch"},
+            )
+            _finish_step_failed(
+                deployment,
+                "verify_https",
+                stdout="HTTPS verification skipped, because certbot was not executed.",
+                stderr="verify_https skipped due to DNS mismatch",
+                exit_code=1,
+                metadata={"error_category": "healthcheck_error", "skipped": True, "reason": "dns_mismatch"},
+            )
+            raise RuntimeError(mismatch_message)
+        else:
+            _finish_step_success(
+                deployment,
+                "check_dns",
+                stdout=dns_output,
+                exit_code=0,
+                metadata={"matches": True, "resolved_ip": dns_result.resolved_ip, "expected_ip": dns_result.expected_ip},
+            )
+            _run_command_step(deployment, "run_certbot", lambda: executor.run_certbot(server.ipv4 or "127.0.0.1", ctx.domain))
+            _run_command_step(deployment, "verify_https", lambda: executor.verify_https(server.ipv4 or "127.0.0.1", ctx.domain))
 
         _run_command_step(deployment, "healthcheck", lambda: executor.verify_deployment(server.ipv4 or "127.0.0.1", ctx))
 
