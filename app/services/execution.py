@@ -286,6 +286,104 @@ class DeploymentExecutor:
         ]
         return self.ssh.run_many(host, commands)
 
-    def healthcheck(self, host: str, ctx: PipelineContext):
-        commands = [f"curl -s http://127.0.0.1:{ctx.host_port} | head -c 50"]
-        return self.ssh.run_many(host, commands)
+    def verify_deployment(self, host: str, ctx: PipelineContext) -> list:
+        """Self-healing post-deploy verification.
+
+        Check order (auto-fix attempted at each stage):
+          1. Web container is running  → restart via compose if not
+          2. nginx symlink present      → re-run configure_reverse_proxy if not
+          3. nginx not serving default  → re-run configure_reverse_proxy if it is
+          4. App responds on host port  → final confirmation
+
+        The final CommandResult entry has return_code 0 on full success or 1 on
+        permanent failure so that _assert_command_results_ok fails the step.
+        """
+        deploy_dir = f"/opt/orbital/{ctx.slug}"
+        container_name = f"{ctx.slug}-web"
+        results: list = []
+
+        # ── 1. Container running? ─────────────────────────────────────────────
+        running = self.ssh.run_one(
+            host,
+            f"docker ps --filter 'name={container_name}' --filter 'status=running' --format '{{{{.Names}}}}'",
+        )
+        results.append(running)
+
+        if container_name not in (running.stdout or ""):
+            # Auto-fix: show logs then force-recreate
+            logs = self.ssh.run_one(
+                host,
+                f"docker compose -f {deploy_dir}/docker-compose.yml logs --tail=50 web",
+            )
+            results.append(logs)
+            restart = self.ssh.run_one(
+                host,
+                f"docker compose -f {deploy_dir}/docker-compose.yml up -d --force-recreate",
+            )
+            results.append(restart)
+            recheck = self.ssh.run_one(
+                host,
+                f"docker ps --filter 'name={container_name}' --filter 'status=running' --format '{{{{.Names}}}}'",
+            )
+            results.append(recheck)
+            if container_name not in (recheck.stdout or ""):
+                results.append(CommandResult(
+                    command="verify_deployment:container_check",
+                    return_code=1,
+                    stdout="",
+                    stderr=(
+                        f"Container {container_name} ist nach Auto-Restart nicht gestartet. "
+                        "Deployment-Fehler – Projekt ist NICHT erreichbar. Siehe Docker-Logs oben."
+                    ),
+                ))
+                return results
+
+        # ── 2. nginx symlink vorhanden? ───────────────────────────────────────
+        symlink = self.ssh.run_one(
+            host,
+            f"test -L /etc/nginx/sites-enabled/{ctx.slug}.conf",
+        )
+        results.append(symlink)
+        if symlink.return_code != 0:
+            # Auto-fix: re-apply reverse proxy config
+            results.extend(self.configure_reverse_proxy(host, ctx))
+
+        # ── 3. nginx darf NICHT die Default-Seite ausliefern ──────────────────
+        # Probe via port 80 (through nginx). "Welcome to nginx" = default site still active.
+        probe = self.ssh.run_one(host, "curl -s http://127.0.0.1:80 --max-time 15")
+        results.append(probe)
+        if "Welcome to nginx" in (probe.stdout or ""):
+            # Auto-fix: re-apply proxy config and reload nginx
+            results.extend(self.configure_reverse_proxy(host, ctx))
+            reprobe = self.ssh.run_one(host, "curl -s http://127.0.0.1:80 --max-time 15")
+            results.append(reprobe)
+            if "Welcome to nginx" in (reprobe.stdout or ""):
+                results.append(CommandResult(
+                    command="verify_deployment:nginx_routing_check",
+                    return_code=1,
+                    stdout=reprobe.stdout or "",
+                    stderr=(
+                        "nginx liefert nach automatischer Neukonfiguration noch immer die Default-Seite. "
+                        f"Symlink /etc/nginx/sites-enabled/{ctx.slug}.conf wurde nicht uebernommen. "
+                        "Projekt ist NICHT erreichbar."
+                    ),
+                ))
+                return results
+
+        # ── 4. App antwortet direkt auf host_port ─────────────────────────────
+        direct = self.ssh.run_one(
+            host,
+            f"curl -s http://127.0.0.1:{ctx.host_port} --max-time 15 | head -c 50",
+        )
+        results.append(direct)
+
+        results.append(CommandResult(
+            command="verify_deployment:ok",
+            return_code=0,
+            stdout=(
+                f"container={container_name} status=running "
+                f"nginx_routed=true host_port={ctx.host_port}"
+            ),
+            stderr="",
+        ))
+        return results

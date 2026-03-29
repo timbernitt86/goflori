@@ -53,6 +53,7 @@ ALLOWED_COMMAND_PREFIXES: tuple[str, ...] = (
     "curl -SL https://",
     "chmod +x /usr/local/lib/docker/cli-plugins/",
     "mkdir -p /usr/local/lib/docker/cli-plugins",
+    "test -L /etc/nginx/sites-enabled/",
 )
 
 

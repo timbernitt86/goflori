@@ -737,7 +737,7 @@ def run_deployment_task(deployment_id: int):
                 _run_command_step(deployment, "run_certbot", lambda: executor.run_certbot(server.ipv4 or "127.0.0.1", ctx.domain))
                 _run_command_step(deployment, "verify_https", lambda: executor.verify_https(server.ipv4 or "127.0.0.1", ctx.domain))
 
-        _run_command_step(deployment, "healthcheck", lambda: executor.healthcheck(server.ipv4 or "127.0.0.1", ctx))
+        _run_command_step(deployment, "healthcheck", lambda: executor.verify_deployment(server.ipv4 or "127.0.0.1", ctx))
 
         clone_step = next((step for step in deployment.steps if step.name == "clone_repository"), None)
         clone_meta = clone_step.json_details if clone_step and isinstance(clone_step.json_details, dict) else {}
