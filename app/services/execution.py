@@ -263,10 +263,22 @@ class DeploymentExecutor:
     def cleanup_project_from_server(self, host: str, ctx: PipelineContext):
         deploy_dir = f"/opt/orbital/{ctx.slug}"
         commands = [
+            # 1. Try graceful compose down with volumes (works if compose file still exists)
             f"docker compose -f {deploy_dir}/docker-compose.yml down --volumes --remove-orphans || true",
+            # 2. Force-remove any containers matching the project slug (catches v1/v2 naming)
+            f"docker ps -a --filter 'name={ctx.slug}' -q | xargs -r docker rm -f || true",
+            # 3. Remove project Docker images by label/name pattern
+            f"docker images --filter 'reference=*{ctx.slug}*' -q | xargs -r docker rmi -f || true",
+            # 4. Remove named volume created by this project
+            f"docker volume rm orbital-{ctx.slug}-data || true",
+            # 5. Prune any anonymous volumes left behind
+            "docker volume prune -f || true",
+            # 6. Remove nginx site config and reload
             f"rm -f /etc/nginx/sites-enabled/{ctx.slug}.conf",
+            f"rm -f /etc/nginx/sites-available/{ctx.slug}.conf",
             "nginx -t",
             "systemctl reload nginx",
+            # 7. Remove all deploy files
             f"rm -rf {deploy_dir}",
         ]
         return self.ssh.run_many(host, commands)

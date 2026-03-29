@@ -32,6 +32,7 @@ ALLOWED_COMMAND_PREFIXES: tuple[str, ...] = (
     "ln -sf /opt/orbital/",
     "rm -f /etc/nginx/sites-enabled/default",
     "rm -f /etc/nginx/sites-enabled/",
+    "rm -f /etc/nginx/sites-available/",
     "nginx -t",
     "certbot --nginx",
     "certbot certificates",
@@ -44,6 +45,9 @@ ALLOWED_COMMAND_PREFIXES: tuple[str, ...] = (
     "docker compose pull",
     "docker ps",
     "docker rm -f",
+    "docker rmi -f",
+    "docker volume rm",
+    "docker volume prune",
     "docker images",
     "docker logs",
 )
