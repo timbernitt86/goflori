@@ -178,12 +178,42 @@ class SSHExecutor:
     # Public API
     # ------------------------------------------------------------------
 
+    _CONNECT_RETRIES: int = 3
+    _CONNECT_RETRY_DELAY: int = 8  # seconds between connection attempts
+
+    def _connect_with_retry(self, host: str) -> paramiko.SSHClient:
+        """Open SSH connection with up to _CONNECT_RETRIES attempts."""
+        import socket
+        last_exc: Exception | None = None
+        for attempt in range(1, self._CONNECT_RETRIES + 1):
+            try:
+                return self._connect(host)
+            except (
+                paramiko.ssh_exception.NoValidConnectionsError,
+                paramiko.ssh_exception.SSHException,
+                socket.error,
+                OSError,
+            ) as exc:
+                last_exc = exc
+                if attempt < self._CONNECT_RETRIES:
+                    logger.warning(
+                        "SSH connect to %s failed (attempt %d/%d): %s – retrying in %ds",
+                        host, attempt, self._CONNECT_RETRIES, exc, self._CONNECT_RETRY_DELAY,
+                    )
+                    time.sleep(self._CONNECT_RETRY_DELAY)
+                else:
+                    logger.error(
+                        "SSH connect to %s failed after %d attempts: %s",
+                        host, self._CONNECT_RETRIES, exc,
+                    )
+        raise last_exc  # type: ignore[misc]
+
     def run_one(self, host: str, command: str) -> CommandResult:
         """Execute a single command. Opens and closes its own connection."""
         if self.dry_run:
             return CommandResult(command=command, return_code=0, stdout=f"DRY RUN on {host}: {command}", stderr="")
         self._assert_allowed(command)
-        client = self._connect(host)
+        client = self._connect_with_retry(host)
         try:
             return self._exec(client, command)
         finally:
@@ -199,7 +229,7 @@ class SSHExecutor:
             ]
         for cmd in command_list:
             self._assert_allowed(cmd)
-        client = self._connect(host)
+        client = self._connect_with_retry(host)
         try:
             return [self._exec(client, cmd) for cmd in command_list]
         finally:

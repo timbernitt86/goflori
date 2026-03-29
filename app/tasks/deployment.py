@@ -1,6 +1,7 @@
 from celery import shared_task
 from datetime import datetime, timezone
 import logging
+import time
 
 from app.extensions import db
 from app.models import ActivityLog, Deployment, DeploymentStep, Project, Server
@@ -40,13 +41,32 @@ STEP_ERROR_CATEGORY: dict[str, str] = {
     "prepare_host": "remote_command_error",
     "render_artifacts_from_repo": "remote_command_error",
     "upload_artifacts": "upload_error",
-    "start_containers": "remote_command_error",
+    "start_containers": "docker_build_error",
     "configure_reverse_proxy": "nginx_error",
     "check_dns": "dns_error",
     "run_certbot": "certbot_error",
     "verify_https": "healthcheck_error",
     "healthcheck": "healthcheck_error",
 }
+
+# ---------------------------------------------------------------------------
+# Retry configuration per step name
+# max_retries: how many additional attempts after the first failure
+# delay: seconds to wait before the next attempt
+# backoff: multiply delay by this factor on each subsequent attempt
+# ---------------------------------------------------------------------------
+STEP_RETRY_CONFIG: dict[str, dict] = {
+    "prepare_host":           {"max_retries": 2, "delay": 10, "backoff": 1.5},
+    "start_containers":       {"max_retries": 2, "delay": 15, "backoff": 2.0},
+    "configure_reverse_proxy":{"max_retries": 3, "delay": 5,  "backoff": 1.5},
+    "upload_artifacts":       {"max_retries": 2, "delay": 5,  "backoff": 1.0},
+    "run_certbot":            {"max_retries": 1, "delay": 10, "backoff": 1.0},
+    "verify_https":           {"max_retries": 2, "delay": 10, "backoff": 1.5},
+    "healthcheck":            {"max_retries": 2, "delay": 10, "backoff": 2.0},
+}
+
+# Steps that should NOT abort the whole deployment when they ultimately fail
+OPTIONAL_STEPS: frozenset[str] = frozenset({"run_certbot", "verify_https"})
 
 
 def _host_port_for_project(project_id: int) -> int:
@@ -59,6 +79,15 @@ class RemoteCommandError(RuntimeError):
         super().__init__(message)
         self.step_name = step_name
         self.failed_commands = failed_commands
+
+
+class DeploymentTimeoutError(TimeoutError):
+    """Raised when a deployment step exceeds its allowed wall-clock budget."""
+
+    def __init__(self, step_name: str, timeout_seconds: int, message: str):
+        super().__init__(message)
+        self.step_name = step_name
+        self.timeout_seconds = timeout_seconds
 
 
 def _pick_reusable_server(project: Project) -> Server | None:
@@ -98,10 +127,21 @@ def _utcnow() -> datetime:
 def _error_category(step_name: str, exc: Exception) -> str:
     if isinstance(exc, HetznerAPIError):
         return "hetzner_api_error"
+    if isinstance(exc, DeploymentTimeoutError):
+        return "timeout_error"
     if isinstance(exc, (SSHWaitTimeoutError, CommandNotAllowedError)):
         return "ssh_error"
     if isinstance(exc, RemoteCommandError):
-        return STEP_ERROR_CATEGORY.get(step_name, "remote_command_error")
+        category = STEP_ERROR_CATEGORY.get(step_name, "remote_command_error")
+        # Refine docker step categories based on which command failed
+        if step_name == "start_containers" and isinstance(exc, RemoteCommandError):
+            cmds = " ".join(c.get("command", "") for c in exc.failed_commands)
+            if "up" in cmds or "build" in cmds:
+                return "docker_build_error"
+            return "docker_runtime_error"
+        if step_name == "configure_reverse_proxy":
+            return "nginx_error"
+        return category
     return STEP_ERROR_CATEGORY.get(step_name, "unknown_error")
 
 
@@ -115,6 +155,8 @@ def _error_metadata(step_name: str, exc: Exception) -> dict:
         data["failed_commands"] = exc.failed_commands
     if isinstance(exc, HetznerAPIError):
         data["http_status"] = exc.status_code
+    if isinstance(exc, DeploymentTimeoutError):
+        data["timeout_seconds"] = exc.timeout_seconds
     return data
 
 
@@ -276,31 +318,98 @@ def _serialize_command_results(results) -> tuple[str, str, int, dict]:
     return stdout_blob, stderr_blob, max_exit_code, {"commands": details}
 
 
-def _run_command_step(deployment: Deployment, name: str, command_runner):
+def _run_command_step(
+    deployment: Deployment,
+    name: str,
+    command_runner,
+    *,
+    max_retries: int | None = None,
+    retry_delay: float | None = None,
+    backoff: float | None = None,
+    raises: bool = True,
+):
+    """Execute a deployment step with automatic retry on failure.
+
+    Retry config is taken from STEP_RETRY_CONFIG unless overridden via kwargs.
+    Each failed attempt is logged in the step stdout so the UI shows full history.
+
+    Args:
+        raises: If False the step failure is recorded but no exception is raised
+                (use for OPTIONAL_STEPS like run_certbot/verify_https).
+    """
+    cfg = STEP_RETRY_CONFIG.get(name, {})
+    total_attempts = 1 + (max_retries if max_retries is not None else cfg.get("max_retries", 0))
+    delay = retry_delay if retry_delay is not None else cfg.get("delay", 5)
+    bk = backoff if backoff is not None else cfg.get("backoff", 1.0)
+
     _start_step(deployment, name)
-    try:
-        results = command_runner()
-        _assert_command_results_ok(name, results)
-        stdout, stderr, exit_code, meta = _serialize_command_results(results)
-        _finish_step_success(
-            deployment,
-            name,
-            stdout=stdout,
-            stderr=stderr,
-            exit_code=exit_code,
-            metadata=meta,
-        )
-        return results
-    except Exception as exc:
-        _finish_step_failed(
-            deployment,
-            name,
-            stderr=str(exc),
-            exit_code=1,
-            metadata=_error_metadata(name, exc),
-        )
-        logger.exception("deployment=%s step=%s command step failed", deployment.id, name)
-        raise
+
+    attempt_logs: list[str] = []
+    last_exc: Exception | None = None
+
+    for attempt in range(1, total_attempts + 1):
+        try:
+            results = command_runner()
+            _assert_command_results_ok(name, results)
+            stdout, stderr, exit_code, meta = _serialize_command_results(results)
+
+            # Prepend attempt history to stdout so it's always visible in the UI
+            prefix = f"attempts={attempt}/{total_attempts}\n"
+            if len(attempt_logs) > 0:
+                prefix += "retry_history:\n" + "\n".join(attempt_logs) + "\n---\n"
+
+            _finish_step_success(
+                deployment,
+                name,
+                stdout=prefix + (stdout or ""),
+                stderr=stderr,
+                exit_code=exit_code,
+                metadata={**meta, "attempts": attempt, "total_attempts": total_attempts},
+            )
+            return results
+
+        except Exception as exc:
+            last_exc = exc
+            attempt_log = (
+                f"attempt={attempt}/{total_attempts} "
+                f"error={type(exc).__name__}: {str(exc)[:300]}"
+            )
+            attempt_logs.append(attempt_log)
+            logger.warning(
+                "deployment=%s step=%s %s",
+                deployment.id, name, attempt_log,
+            )
+
+            if attempt < total_attempts:
+                sleep_time = delay * (bk ** (attempt - 1))
+                logger.info(
+                    "deployment=%s step=%s retrying in %.1fs (attempt %d/%d)",
+                    deployment.id, name, sleep_time, attempt + 1, total_attempts,
+                )
+                time.sleep(sleep_time)
+
+    # All attempts exhausted
+    assert last_exc is not None
+    retry_summary = "\n".join(attempt_logs)
+    _finish_step_failed(
+        deployment,
+        name,
+        stdout=f"attempts={total_attempts}/{total_attempts} – alle Versuche fehlgeschlagen\n{retry_summary}",
+        stderr=str(last_exc),
+        exit_code=1,
+        metadata={
+            **_error_metadata(name, last_exc),
+            "attempts": total_attempts,
+            "total_attempts": total_attempts,
+            "retry_history": attempt_logs,
+        },
+    )
+    logger.error(
+        "deployment=%s step=%s FAILED after %d attempt(s): %s",
+        deployment.id, name, total_attempts, last_exc,
+    )
+    if raises:
+        raise last_exc
 
 
 def _fail_running_steps(deployment: Deployment, exc: Exception) -> None:
@@ -319,6 +428,25 @@ def _fail_running_steps(deployment: Deployment, exc: Exception) -> None:
 def run_deployment_task(deployment_id: int):
     deployment = Deployment.query.get_or_404(deployment_id)
     project = Project.query.get_or_404(deployment.project_id)
+
+    # Prevent concurrent deployments on the same project
+    already_running = (
+        Deployment.query.filter(
+            Deployment.project_id == deployment.project_id,
+            Deployment.status == "running",
+            Deployment.id != deployment_id,
+        ).first()
+    )
+    if already_running:
+        msg = (
+            f"Abgebrochen: Deployment #{already_running.id} läuft bereits auf diesem Projekt. "
+            "Bitte warte auf den Abschluss oder breche es manuell ab."
+        )
+        deployment.status = "failed"
+        deployment.error_message = msg
+        db.session.commit()
+        raise RuntimeError(msg)
+
     executor = DeploymentExecutor()
     repo_cloner = LocalRepoCloneService()
     repo_analyzer = RepoAnalyzer()
@@ -724,8 +852,8 @@ def run_deployment_task(deployment_id: int):
                 exit_code=0,
                 metadata={"matches": True, "resolved_ip": dns_result.resolved_ip, "expected_ip": dns_result.expected_ip},
             )
-            _run_command_step(deployment, "run_certbot", lambda: executor.run_certbot(server.ipv4 or "127.0.0.1", ctx.domain))
-            _run_command_step(deployment, "verify_https", lambda: executor.verify_https(server.ipv4 or "127.0.0.1", ctx.domain))
+            _run_command_step(deployment, "run_certbot", lambda: executor.run_certbot(server.ipv4 or "127.0.0.1", ctx.domain), raises=False)
+            _run_command_step(deployment, "verify_https", lambda: executor.verify_https(server.ipv4 or "127.0.0.1", ctx.domain), raises=False)
 
         _run_command_step(deployment, "healthcheck", lambda: executor.verify_deployment(server.ipv4 or "127.0.0.1", ctx))
 
