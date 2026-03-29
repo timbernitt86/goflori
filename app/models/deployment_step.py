@@ -26,6 +26,7 @@ class DeploymentStep(TimestampMixin, db.Model):
     def to_dict(self):
         resolved_stdout = self.stdout if self.stdout is not None else self.output
         resolved_stderr = self.stderr if self.stderr is not None else self.error_message
+        details = self.json_details if isinstance(self.json_details, dict) else {}
         return {
             "id": self.id,
             "deployment_id": self.deployment_id,
@@ -36,6 +37,7 @@ class DeploymentStep(TimestampMixin, db.Model):
             "stdout": resolved_stdout,
             "stderr": resolved_stderr,
             "exit_code": self.exit_code,
+            "error_type": details.get("error_type"),
             "json_details": self.json_details,
             # Legacy payload keys for backward compatibility.
             "output": resolved_stdout,

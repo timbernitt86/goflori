@@ -2,6 +2,8 @@ from celery import shared_task
 from datetime import datetime, timezone
 import logging
 import time
+from types import SimpleNamespace
+from typing import Any
 
 from app.extensions import db
 from app.models import ActivityLog, Deployment, DeploymentStep, Project, Server
@@ -48,6 +50,32 @@ STEP_ERROR_CATEGORY: dict[str, str] = {
     "verify_https": "healthcheck_error",
     "healthcheck": "healthcheck_error",
 }
+
+INFRA_ERROR_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "hetzner_api_error",
+        "ssh_error",
+        "remote_command_error",
+        "upload_error",
+        "repo_clone_error",
+        "repo_analysis_error",
+        "dns_error",
+        "timeout_error",
+        "unknown_error",
+    }
+)
+
+BUILD_ERROR_CATEGORIES: frozenset[str] = frozenset({"docker_build_error", "build_error"})
+
+RUNTIME_ERROR_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "docker_runtime_error",
+        "nginx_error",
+        "certbot_error",
+        "healthcheck_error",
+        "runtime_error",
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Retry configuration per step name
@@ -124,6 +152,67 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _event_timestamp() -> str:
+    return _utcnow().isoformat()
+
+
+def _default_step_details() -> dict[str, Any]:
+    return {
+        "error_type": None,
+        "error_category": None,
+        "events": [],
+    }
+
+
+def _normalized_step_details(
+    existing: dict | None = None,
+    extra: dict | None = None,
+    *,
+    preserve_error_fields: bool = True,
+) -> dict[str, Any]:
+    details: dict[str, Any] = _default_step_details()
+    if isinstance(existing, dict):
+        details.update(existing)
+    if isinstance(extra, dict):
+        details.update(extra)
+
+    if not isinstance(details.get("events"), list):
+        details["events"] = []
+
+    if not preserve_error_fields:
+        details["error_type"] = None
+        details["error_category"] = None
+
+    return details
+
+
+def _new_event(level: str, message: str, source: str, context: dict | None = None) -> dict[str, Any]:
+    event: dict[str, Any] = {
+        "timestamp": _event_timestamp(),
+        "level": level,
+        "message": message,
+        "source": source,
+    }
+    if context:
+        event["context"] = context
+    return event
+
+
+def _classify_error_type(step_name: str, exc: Exception, *, error_category: str | None = None) -> str:
+    category = (error_category or _error_category(step_name, exc)).strip().lower()
+    if category in BUILD_ERROR_CATEGORIES:
+        return "build_error"
+    if category in RUNTIME_ERROR_CATEGORIES:
+        return "runtime_error"
+    if category in INFRA_ERROR_CATEGORIES:
+        return "infra_error"
+    if "build" in category:
+        return "build_error"
+    if "runtime" in category:
+        return "runtime_error"
+    return "infra_error"
+
+
 def _error_category(step_name: str, exc: Exception) -> str:
     if isinstance(exc, HetznerAPIError):
         return "hetzner_api_error"
@@ -146,8 +235,10 @@ def _error_category(step_name: str, exc: Exception) -> str:
 
 
 def _error_metadata(step_name: str, exc: Exception) -> dict:
+    error_category = _error_category(step_name, exc)
     data = {
-        "error_category": _error_category(step_name, exc),
+        "error_type": _classify_error_type(step_name, exc, error_category=error_category),
+        "error_category": error_category,
         "exception_type": type(exc).__name__,
         "step_name": step_name,
     }
@@ -176,7 +267,8 @@ def _start_step(deployment: Deployment, name: str, *, metadata: dict | None = No
     step.stdout = None
     step.stderr = None
     step.exit_code = None
-    step.json_details = metadata
+    step.json_details = _normalized_step_details(step.json_details, metadata, preserve_error_fields=False)
+    step.json_details["events"].append(_new_event("info", "Step gestartet", source="step_runner.start"))
     # Keep legacy fields in sync.
     step.output = None
     step.error_message = None
@@ -202,7 +294,15 @@ def _finish_step_success(
     step.stdout = stdout
     step.stderr = stderr
     step.exit_code = exit_code
-    step.json_details = metadata
+    step.json_details = _normalized_step_details(step.json_details, metadata, preserve_error_fields=False)
+    step.json_details["events"].append(
+        _new_event(
+            "info",
+            "Step erfolgreich abgeschlossen",
+            source="step_runner.finish",
+            context={"status": "success", "exit_code": exit_code},
+        )
+    )
     # Keep legacy fields in sync.
     step.output = stdout
     step.error_message = stderr
@@ -228,7 +328,12 @@ def _finish_step_failed(
     step.stdout = stdout
     step.stderr = stderr
     step.exit_code = exit_code
-    resolved_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+    resolved_metadata = _normalized_step_details(step.json_details, metadata)
+    resolved_metadata["error_type"] = resolved_metadata.get("error_type") or _classify_error_type(
+        name,
+        RuntimeError(stderr or "step_failed"),
+        error_category=resolved_metadata.get("error_category"),
+    )
     error_analysis = analyze_deployment_failure(
         step_name=name,
         stdout=stdout,
@@ -237,6 +342,27 @@ def _finish_step_failed(
         exception_type=resolved_metadata.get("exception_type"),
     )
     resolved_metadata["error_analysis"] = error_analysis
+    resolved_metadata["events"].append(
+        _new_event(
+            "error",
+            "Step fehlgeschlagen",
+            source="step_runner.finish",
+            context={
+                "status": "failed",
+                "exit_code": exit_code,
+                "error_type": resolved_metadata.get("error_type"),
+                "error_category": resolved_metadata.get("error_category"),
+                "exception_type": resolved_metadata.get("exception_type"),
+            },
+        )
+    )
+    resolved_metadata["error_details"] = {
+        "message": stderr or "Unbekannter Fehler",
+        "error_type": resolved_metadata.get("error_type"),
+        "error_category": resolved_metadata.get("error_category"),
+        "exception_type": resolved_metadata.get("exception_type"),
+        "exit_code": exit_code,
+    }
     step.json_details = resolved_metadata
     # Keep legacy fields in sync.
     step.output = stdout
@@ -255,6 +381,22 @@ def _latest_error_analysis(deployment: Deployment) -> dict | None:
         if isinstance(analysis, dict) and analysis.get("error_type"):
             return analysis
     return None
+
+
+def log_step_event(
+    deployment: Deployment,
+    step_name: str,
+    *,
+    level: str,
+    message: str,
+    source: str,
+    context: dict | None = None,
+) -> None:
+    step = _find_or_create_step(deployment, step_name)
+    details = _normalized_step_details(step.json_details)
+    details["events"].append(_new_event(level=level, message=message, source=source, context=context))
+    step.json_details = details
+    db.session.commit()
 
 
 def _assert_command_results_ok(step_name: str, results) -> None:
@@ -318,6 +460,40 @@ def _serialize_command_results(results) -> tuple[str, str, int, dict]:
     return stdout_blob, stderr_blob, max_exit_code, {"commands": details}
 
 
+def _run_step(
+    deployment: Deployment,
+    name: str,
+    runner,
+    *,
+    success_mapper,
+    start_metadata: dict | None = None,
+) -> Any:
+    """Run a step with unified start/success/failed transitions."""
+    _start_step(deployment, name, metadata=start_metadata)
+    try:
+        payload = runner()
+        success = success_mapper(payload)
+        _finish_step_success(
+            deployment,
+            name,
+            stdout=success.get("stdout"),
+            stderr=success.get("stderr"),
+            exit_code=success.get("exit_code", 0),
+            metadata=success.get("metadata"),
+        )
+        return payload
+    except Exception as exc:
+        _finish_step_failed(
+            deployment,
+            name,
+            stderr=str(exc),
+            exit_code=1,
+            metadata=_error_metadata(name, exc),
+        )
+        logger.exception("deployment=%s step=%s failed", deployment.id, name)
+        raise
+
+
 def _run_command_step(
     deployment: Deployment,
     name: str,
@@ -343,6 +519,14 @@ def _run_command_step(
     bk = backoff if backoff is not None else cfg.get("backoff", 1.0)
 
     _start_step(deployment, name)
+    log_step_event(
+        deployment,
+        name,
+        level="info",
+        message="Kommando-Step gestartet",
+        source="step_runner.command",
+        context={"step_name": name, "total_attempts": total_attempts},
+    )
 
     attempt_logs: list[str] = []
     last_exc: Exception | None = None
@@ -375,6 +559,19 @@ def _run_command_step(
                 f"error={type(exc).__name__}: {str(exc)[:300]}"
             )
             attempt_logs.append(attempt_log)
+            log_step_event(
+                deployment,
+                name,
+                level="warning",
+                message="Step-Versuch fehlgeschlagen",
+                source="step_runner.command",
+                context={
+                    "attempt": attempt,
+                    "total_attempts": total_attempts,
+                    "exception_type": type(exc).__name__,
+                    "error_preview": str(exc)[:300],
+                },
+            )
             logger.warning(
                 "deployment=%s step=%s %s",
                 deployment.id, name, attempt_log,
@@ -385,6 +582,18 @@ def _run_command_step(
                 logger.info(
                     "deployment=%s step=%s retrying in %.1fs (attempt %d/%d)",
                     deployment.id, name, sleep_time, attempt + 1, total_attempts,
+                )
+                log_step_event(
+                    deployment,
+                    name,
+                    level="info",
+                    message="Retry eingeplant",
+                    source="step_runner.command",
+                    context={
+                        "next_attempt": attempt + 1,
+                        "sleep_seconds": sleep_time,
+                        "backoff": bk,
+                    },
                 )
                 time.sleep(sleep_time)
 
@@ -567,8 +776,7 @@ def run_deployment_task(deployment_id: int):
                 exit_code=0,
             )
 
-        _start_step(deployment, "clone_repository")
-        try:
+        def _clone_repository_runner() -> dict[str, Any]:
             if ctx.repository_url:
                 clone_result = repo_cloner.clone(
                     repo_url=ctx.repository_url,
@@ -577,95 +785,78 @@ def run_deployment_task(deployment_id: int):
                     access_token=project.repository.access_token if project.repository else None,
                 )
                 ctx.local_repository_path = clone_result.local_path
-
                 stdout, stderr, exit_code, details = _serialize_command_results(clone_result.command_results)
-                _finish_step_success(
-                    deployment,
-                    "clone_repository",
-                    stdout=f"deployment_mode=repository\n{stdout}",
-                    stderr=stderr,
-                    exit_code=exit_code,
-                    metadata={
+                return {
+                    "stdout": f"deployment_mode=repository\n{stdout}",
+                    "stderr": stderr,
+                    "exit_code": exit_code,
+                    "metadata": {
                         "deployment_mode": "repository",
                         "local_path": clone_result.local_path,
                         "branch": clone_result.branch,
                         "commit_hash": clone_result.commit_hash,
                         **details,
                     },
-                )
-            else:
-                ctx.deployment_mode = "fallback"
-                _finish_step_success(
-                    deployment,
-                    "clone_repository",
-                    stdout="deployment_mode=fallback\nRepository nicht hinterlegt: clone_repository uebersprungen.",
-                    exit_code=0,
-                    metadata={
-                        "deployment_mode": "fallback",
-                        "skipped": True,
-                        "reason": "repository_not_configured",
-                    },
-                )
-        except Exception as exc:
-            _finish_step_failed(
-                deployment,
-                "clone_repository",
-                stderr=str(exc),
-                exit_code=1,
-                metadata=_error_metadata("clone_repository", exc),
-            )
-            logger.exception("deployment=%s step=clone_repository failed", deployment.id)
-            raise
+                }
 
-        _start_step(deployment, "analyze_repository")
-        try:
+            ctx.deployment_mode = "fallback"
+            return {
+                "stdout": "deployment_mode=fallback\nRepository nicht hinterlegt: clone_repository uebersprungen.",
+                "exit_code": 0,
+                "metadata": {
+                    "deployment_mode": "fallback",
+                    "skipped": True,
+                    "reason": "repository_not_configured",
+                },
+            }
+
+        _run_step(
+            deployment,
+            "clone_repository",
+            _clone_repository_runner,
+            success_mapper=lambda payload: payload,
+        )
+
+        def _analyze_repository_runner() -> dict[str, Any]:
             if ctx.local_repository_path:
                 analysis = repo_analyzer.analyze_path(ctx.local_repository_path)
                 if analysis.detected_stack != "unknown":
                     ctx.framework = analysis.framework
                 if analysis.port:
                     ctx.app_port = analysis.port
-
-                _finish_step_success(
-                    deployment,
-                    "analyze_repository",
-                    stdout=(
+                return {
+                    "stdout": (
                         f"deployment_mode={ctx.deployment_mode}\n"
                         f"detected_stack={analysis.detected_stack}\n"
                         f"confidence={analysis.confidence}\n"
                         f"framework={analysis.framework}\n"
                         f"relevant_files={', '.join(analysis.relevant_files) if analysis.relevant_files else '-'}"
                     ),
-                    exit_code=0,
-                    metadata={
+                    "exit_code": 0,
+                    "metadata": {
                         "deployment_mode": ctx.deployment_mode,
                         **analysis.to_dict(),
                     },
-                )
-            else:
-                _finish_step_success(
-                    deployment,
-                    "analyze_repository",
-                    stdout="deployment_mode=fallback\nRepository-Analyse uebersprungen (kein lokaler Clone).",
-                    exit_code=0,
-                    metadata={
-                        "deployment_mode": "fallback",
-                        "detected_stack": "fallback",
-                        "confidence": 1.0,
-                        "relevant_files": [],
-                        "skipped": True,
-                    },
-                )
-        except Exception as exc:
-            _finish_step_failed(
-                deployment,
-                "analyze_repository",
-                stderr=str(exc),
-                exit_code=1,
-                metadata=_error_metadata("analyze_repository", exc),
-            )
-            logger.exception("deployment=%s step=analyze_repository failed", deployment.id)
-            raise
+                }
+
+            return {
+                "stdout": "deployment_mode=fallback\nRepository-Analyse uebersprungen (kein lokaler Clone).",
+                "exit_code": 0,
+                "metadata": {
+                    "deployment_mode": "fallback",
+                    "detected_stack": "fallback",
+                    "confidence": 1.0,
+                    "relevant_files": [],
+                    "skipped": True,
+                },
+            }
+
+        _run_step(
+            deployment,
+            "analyze_repository",
+            _analyze_repository_runner,
+            success_mapper=lambda payload: payload,
+        )
 
         if ctx.is_update:
             # Verify Docker AND nginx are actually installed before skipping prepare_host.
@@ -773,8 +964,36 @@ def run_deployment_task(deployment_id: int):
 
         # DNS check and SSL must run on every deploy (initial AND update).
         # Skipping on update caused false "success" when domain pointed to wrong IP.
-        _start_step(deployment, "check_dns")
-        dns_result = executor.check_dns(ctx.domain, server.ipv4)
+        dns_result_holder: dict[str, Any] = {}
+
+        def _check_dns_runner() -> dict[str, Any]:
+            dns_result = executor.check_dns(ctx.domain, server.ipv4)
+            dns_result_holder["value"] = dns_result
+            return {
+                "stdout": (
+                    f"resolved_ip={dns_result.resolved_ip}\n"
+                    f"expected_ip={dns_result.expected_ip}\n"
+                    f"matches={dns_result.matches}"
+                ),
+                "exit_code": 0,
+                "metadata": {
+                    "matches": dns_result.matches,
+                    "resolved_ip": dns_result.resolved_ip,
+                    "expected_ip": dns_result.expected_ip,
+                },
+            }
+
+        if ctx.domain:
+            _run_step(
+                deployment,
+                "check_dns",
+                _check_dns_runner,
+                success_mapper=lambda payload: payload,
+            )
+            dns_result = dns_result_holder["value"]
+        else:
+            dns_result = SimpleNamespace(resolved_ip="-", expected_ip=server.ipv4 or "-", matches=False)
+
         dns_output = (
             f"resolved_ip={dns_result.resolved_ip}\n"
             f"expected_ip={dns_result.expected_ip}\n"
@@ -845,13 +1064,6 @@ def run_deployment_task(deployment_id: int):
             )
             raise RuntimeError(mismatch_message)
         else:
-            _finish_step_success(
-                deployment,
-                "check_dns",
-                stdout=dns_output,
-                exit_code=0,
-                metadata={"matches": True, "resolved_ip": dns_result.resolved_ip, "expected_ip": dns_result.expected_ip},
-            )
             _run_command_step(deployment, "run_certbot", lambda: executor.run_certbot(server.ipv4 or "127.0.0.1", ctx.domain), raises=False)
             _run_command_step(deployment, "verify_https", lambda: executor.verify_https(server.ipv4 or "127.0.0.1", ctx.domain), raises=False)
 

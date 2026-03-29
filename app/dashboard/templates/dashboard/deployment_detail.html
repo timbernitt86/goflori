@@ -204,6 +204,10 @@
                             <span class="step-meta-value">{{ exit_code }}</span>
                         </div>
                         <div class="step-meta-item">
+                            <span class="step-meta-label">error_type</span>
+                            <span class="step-meta-value">{{ step.error_type or (step.json_details.error_type if step.json_details else '-') or '-' }}</span>
+                        </div>
+                        <div class="step-meta-item">
                             <span class="step-meta-label">started_at</span>
                             <span class="step-meta-value">{{ started_at }}</span>
                         </div>
@@ -237,6 +241,13 @@
                                 <tr><th>suggested_fix</th><td>{{ step_analysis.suggested_fix }}</td></tr>
                             </tbody>
                         </table>
+                    {% endif %}
+
+                    {% set step_events = step.json_details.events if step.json_details and step.json_details.events else [] %}
+                    {% if step_events %}
+                        <p><strong>Strukturierte Events</strong></p>
+                        <pre>{% for event in step_events %}[{{ event.timestamp }}] {{ event.level|upper }} {{ event.source }} - {{ event.message }}{% if event.context %} | context={{ event.context | tojson }}{% endif %}
+{% endfor %}</pre>
                     {% endif %}
                 </div>
             </details>
