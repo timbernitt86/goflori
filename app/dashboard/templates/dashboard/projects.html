@@ -28,6 +28,9 @@
                         <tr>
                             <th>Name</th>
                             <th>Status</th>
+                            <th>Runtime</th>
+                            <th>Aktive Version</th>
+                            <th>Letzter Erfolg</th>
                             <th>Domain</th>
                             <th>Repository</th>
                             <th>Deployments</th>
@@ -35,11 +38,24 @@
                     </thead>
                     <tbody>
                         {% for project in projects %}
+                            {% set runtime = runtime_state_by_project.get(project.id, {}) %}
                             <tr>
                                 <td><a href="{{ url_for('dashboard.project_detail', project_id=project.id) }}">{{ project.name }}</a></td>
                                 <td>
                                     {% set status_class = 'status-' ~ project.status if project.status in ['pending', 'running', 'success', 'failed'] else 'status-unknown' %}
                                     <span class="badge {{ status_class }}">{{ project.status }}</span>
+                                </td>
+                                <td>
+                                    {% set runtime_class = 'status-' ~ runtime.get('current_runtime_status') if runtime.get('current_runtime_status') in ['running', 'failed', 'degraded'] else 'status-unknown' %}
+                                    <span class="badge {{ runtime_class }}">{{ runtime.get('current_runtime_status', '-') }}</span>
+                                </td>
+                                <td>{{ runtime.get('active_version') or '-' }}</td>
+                                <td>
+                                    {% if runtime.get('last_successful_deployment_id') %}
+                                        <a href="{{ url_for('dashboard.deployment_detail', deployment_id=runtime.get('last_successful_deployment_id')) }}">#{{ runtime.get('last_successful_deployment_id') }}</a>
+                                    {% else %}
+                                        -
+                                    {% endif %}
                                 </td>
                                 <td>{{ project.domain or '-' }}</td>
                                 <td>{{ project.repository.repo_url if project.repository else '-' }}</td>

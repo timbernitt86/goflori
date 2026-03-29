@@ -20,6 +20,12 @@ class Project(TimestampMixin, db.Model):
     desired_image = db.Column(db.String(255), nullable=True)
     branch = db.Column(db.String(255), nullable=False, default="main")
     status = db.Column(db.String(50), nullable=False, default="draft")
+    current_runtime_status = db.Column(db.String(50), nullable=False, default="failed")
+    last_successful_deployment_id = db.Column(db.Integer, db.ForeignKey("deployments.id"), nullable=True)
+    active_deployment_id = db.Column(db.Integer, db.ForeignKey("deployments.id"), nullable=True)
+    active_version = db.Column(db.String(255), nullable=True)
+    active_source_reference = db.Column(db.String(1000), nullable=True)
+    last_healthcheck_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     repository = db.relationship("Repository", back_populates="project", uselist=False, cascade="all, delete-orphan")
     servers = db.relationship(
@@ -29,11 +35,24 @@ class Project(TimestampMixin, db.Model):
         foreign_keys="Server.project_id",
     )
     active_server = db.relationship("Server", foreign_keys=[active_server_id], post_update=True)
-    deployments = db.relationship("Deployment", back_populates="project", cascade="all, delete-orphan")
+    deployments = db.relationship(
+        "Deployment",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        foreign_keys="Deployment.project_id",
+    )
+    last_successful_deployment = db.relationship("Deployment", foreign_keys=[last_successful_deployment_id], post_update=True)
+    active_deployment = db.relationship("Deployment", foreign_keys=[active_deployment_id], post_update=True)
     environment_variables = db.relationship(
         "EnvironmentVariable", back_populates="project", cascade="all, delete-orphan"
     )
     activity_logs = db.relationship("ActivityLog", back_populates="project", cascade="all, delete-orphan")
+    health_checks = db.relationship(
+        "ProjectHealthCheck",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        order_by="ProjectHealthCheck.checked_at.desc()",
+    )
     company = db.relationship("Company", back_populates="projects")
 
     @staticmethod
@@ -56,6 +75,12 @@ class Project(TimestampMixin, db.Model):
             "desired_image": self.desired_image,
             "branch": self.branch,
             "status": self.status,
+            "current_runtime_status": self.current_runtime_status,
+            "last_successful_deployment_id": self.last_successful_deployment_id,
+            "active_deployment_id": self.active_deployment_id,
+            "active_version": self.active_version,
+            "active_source_reference": self.active_source_reference,
+            "last_healthcheck_at": self.last_healthcheck_at.isoformat() if self.last_healthcheck_at else None,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }

@@ -8,6 +8,11 @@ from typing import Any
 from app.extensions import db
 from app.models import ActivityLog, Deployment, DeploymentStep, Project, Server
 from app.services.error_analysis import analyze_deployment_failure
+from app.services.project_state_engine import (
+    compute_project_runtime_state,
+    mark_deployment_as_active,
+    run_project_healthcheck,
+)
 from app.services.repo_analyzer import RepoAnalyzer
 from app.services.repo_clone import LocalRepoCloneService
 from app.services.hetzner import HetznerAPIError
@@ -1081,6 +1086,14 @@ def run_deployment_task(deployment_id: int):
         deployment.artifact_snapshot_path = f"/opt/orbital/{ctx.slug}"
         project.status = "live"
         deployment.output = rendered.compose
+        # Mark this deployment as active version and persist runtime-derived fields.
+        mark_deployment_as_active(project, deployment, commit=False)
+
+        # Persist a runtime healthcheck for the newly activated version.
+        run_project_healthcheck(project, deployment=deployment, commit=False)
+
+        # Compute runtime status from active version + latest health information.
+        runtime_state = compute_project_runtime_state(project, commit=False)
         db.session.add(
             ActivityLog(
                 project_id=project.id,
@@ -1089,7 +1102,8 @@ def run_deployment_task(deployment_id: int):
                 message=(
                     "Deployment finished "
                     f"(mode={ctx.deployment_mode}, commit={deployment.commit_sha or '-'}, "
-                    f"artifact_path={deployment.artifact_snapshot_path})"
+                    f"artifact_path={deployment.artifact_snapshot_path}, "
+                    f"runtime_status={runtime_state.current_runtime_status})"
                 ),
             )
         )
@@ -1114,5 +1128,8 @@ def run_deployment_task(deployment_id: int):
             ActivityLog(project_id=project.id, action="deployment.failed", actor="system", message=str(exc))
         )
         db.session.commit()
+
+        # Recompute project runtime state after failed deployment.
+        compute_project_runtime_state(project)
         logger.exception("deployment=%s failed", deployment.id)
         raise

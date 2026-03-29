@@ -1,6 +1,6 @@
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import requests.exceptions
@@ -14,9 +14,14 @@ from sqlalchemy.orm import joinedload
 
 from app.dashboard import bp
 from app.extensions import db
-from app.models import ActivityLog, Deployment, DeploymentStep, EnvironmentVariable, Project, ProviderSetting, Repository, Server
+from app.models import ActivityLog, Deployment, DeploymentStep, EnvironmentVariable, Project, ProjectHealthCheck, ProviderSetting, Repository, Server
 from app.services.hetzner import HetznerAPIError, HetznerClient
 from app.services.execution import DeploymentExecutor, PipelineContext
+from app.services.project_state_engine import (
+    compute_project_runtime_state,
+    get_last_successful_deployment,
+    run_project_healthcheck,
+)
 from app.tasks.deployment import STEP_NAMES, run_deployment_task
 
 logger = logging.getLogger(__name__)
@@ -26,6 +31,10 @@ DEFAULT_SERVER_TYPE = "cx22"
 DEFAULT_LOCATION = "nbg1"
 DEFAULT_IMAGE = "ubuntu-24.04"
 SECRET_ENV_SUFFIXES = ("KEY", "TOKEN", "SECRET", "PASSWORD")
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _is_task_queue_usable() -> tuple[bool, str | None]:
@@ -285,6 +294,40 @@ def _infer_repository_provider(repo_url: str | None) -> str | None:
     if "bitbucket.org" in value:
         return "bitbucket"
     return None
+
+
+def _latest_project_health(project: Project) -> ProjectHealthCheck | None:
+    return (
+        ProjectHealthCheck.query.filter_by(project_id=project.id)
+        .order_by(ProjectHealthCheck.checked_at.desc(), ProjectHealthCheck.id.desc())
+        .first()
+    )
+
+
+def _refresh_project_runtime_state(project: Project, *, allow_healthcheck: bool = False) -> dict:
+    latest_health = _latest_project_health(project)
+    if allow_healthcheck:
+        stale = latest_health is None
+        if latest_health is not None and latest_health.checked_at is not None:
+            stale = (_utcnow() - latest_health.checked_at) > timedelta(minutes=2)
+        if stale:
+            try:
+                run_project_healthcheck(project, deployment=project.active_deployment, commit=False)
+                latest_health = _latest_project_health(project)
+            except Exception as exc:
+                logger.warning("Runtime healthcheck refresh failed for project id=%s: %s", project.id, exc)
+
+    runtime = compute_project_runtime_state(project, commit=False)
+    return {
+        "current_runtime_status": runtime.current_runtime_status,
+        "reason": runtime.reason,
+        "last_successful_deployment_id": runtime.last_successful_deployment_id,
+        "active_deployment_id": runtime.active_deployment_id,
+        "active_version": runtime.active_version,
+        "active_source_reference": runtime.active_source_reference,
+        "last_healthcheck_at": runtime.last_healthcheck_at,
+        "last_healthcheck": latest_health,
+    }
 
 
 def _is_secret_env_key(key: str) -> bool:
@@ -608,10 +651,16 @@ def projects():
             deployment_counts = {}
             projects_data = []
 
+    runtime_state_by_project: dict[int, dict] = {}
+    for project in projects_data:
+        runtime_state_by_project[project.id] = _refresh_project_runtime_state(project, allow_healthcheck=False)
+    db.session.commit()
+
     return render_template(
         "dashboard/projects.html",
         projects=projects_data,
         deployment_counts=deployment_counts,
+        runtime_state_by_project=runtime_state_by_project,
         hetzner_defaults=_get_hetzner_defaults(),
     )
 
@@ -805,6 +854,15 @@ def project_detail(project_id: int):
             "target_machine": target_server,
         }
 
+    runtime_state = _refresh_project_runtime_state(project, allow_healthcheck=True)
+    health_history = (
+        ProjectHealthCheck.query.filter_by(project_id=project.id)
+        .order_by(ProjectHealthCheck.checked_at.desc(), ProjectHealthCheck.id.desc())
+        .limit(10)
+        .all()
+    )
+    db.session.commit()
+
     return render_template(
         "dashboard/project_detail.html",
         project=project,
@@ -824,6 +882,32 @@ def project_detail(project_id: int):
         effective_server_type=project.desired_server_type or hetzner_defaults.get("default_server_type"),
         effective_location=project.desired_location or hetzner_defaults.get("default_location"),
         effective_image=project.desired_image or hetzner_defaults.get("default_image"),
+        runtime_state=runtime_state,
+        health_history=health_history,
+        last_successful_deployment=get_last_successful_deployment(project),
+    )
+
+
+@bp.post("/projects/<int:project_id>/runtime-healthcheck")
+def run_project_runtime_healthcheck(project_id: int):
+    project = Project.query.options(joinedload(Project.active_deployment), joinedload(Project.active_server)).filter_by(id=project_id).first()
+    if not project:
+        abort(404)
+
+    try:
+        health = run_project_healthcheck(project, deployment=project.active_deployment)
+        state = compute_project_runtime_state(project)
+    except Exception as exc:
+        logger.exception("Runtime healthcheck failed for project id=%s", project_id)
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify(
+        {
+            "project_id": project.id,
+            "current_runtime_status": state.current_runtime_status,
+            "reason": state.reason,
+            "last_healthcheck": health.to_dict(),
+        }
     )
 
 
@@ -1358,12 +1442,15 @@ def deployment_detail(deployment_id: int):
     fix_suggestion = _suggest_fix_issue(deployment_error_analysis, latest_failed_step.name if latest_failed_step else None)
     step_status = {step.name: step.status for step in steps}
     target_server = _resolve_target_server(deployment.project, deployment)
+    project_runtime_state = _refresh_project_runtime_state(deployment.project, allow_healthcheck=False)
+    db.session.commit()
     return render_template(
         "dashboard/deployment_detail.html",
         deployment=deployment,
         steps=steps,
         deployment_error_analysis=deployment_error_analysis,
         fix_suggestion=fix_suggestion,
+        project_runtime_state=project_runtime_state,
         target_server=target_server,
         provision_server_ok=step_status.get("provision_server") == "success",
         wait_for_ssh_ok=step_status.get("wait_for_ssh") == "success",

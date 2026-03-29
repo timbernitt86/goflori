@@ -4,6 +4,7 @@
 
 {% block content %}
 {% set project_status_class = 'status-' ~ project.status if project.status in ['pending', 'running', 'success', 'failed'] else 'status-unknown' %}
+{% set runtime_status_class = 'status-' ~ runtime_state.current_runtime_status if runtime_state and runtime_state.current_runtime_status in ['running', 'failed', 'degraded'] else 'status-unknown' %}
 <style>
     .project-shell { display: grid; gap: 16px; }
     .project-head { display: grid; gap: 12px; }
@@ -55,6 +56,18 @@
     }
     .details-stack { display: grid; gap: 10px; }
     .inline-form { display: inline; }
+    .runtime-status-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 10px;
+        margin-top: 12px;
+    }
+    .runtime-box {
+        padding: 10px;
+        border-radius: 10px;
+        border: 1px solid rgba(141, 169, 194, 0.5);
+        background: rgba(255, 255, 255, 0.7);
+    }
     @media (max-width: 720px) {
         .project-head-top {
             align-items: stretch;
@@ -97,6 +110,7 @@
                 <li class="overview-item"><strong>Aktiver Server</strong>{{ latest_server.name if latest_server else 'wird automatisch gewaehlt' }}</li>
                 <li class="overview-item"><strong>Branch</strong>{{ project.repository.branch if project.repository and project.repository.branch else project.branch }}</li>
                 <li class="overview-item"><strong>Framework</strong>{{ project.framework or 'automatisch' }}</li>
+                <li class="overview-item"><strong>Laufzeitstatus</strong><span class="badge {{ runtime_status_class }}">{{ runtime_state.current_runtime_status if runtime_state else '-' }}</span></li>
             </ul>
         </div>
 
@@ -122,12 +136,45 @@
             <table class="dense-table">
                 <tbody>
                     <tr><th>Status</th><td><span class="badge {{ project_status_class }}">{{ project.status }}</span></td></tr>
+                    <tr><th>Laufzeitstatus</th><td><span class="badge {{ runtime_status_class }}">{{ runtime_state.current_runtime_status if runtime_state else '-' }}</span></td></tr>
                     <tr><th>Repository</th><td>{{ project.repository.repo_url if project.repository else '-' }}</td></tr>
                     <tr><th>Ziel-IP</th><td>{{ domain_target_ip or '-' }}</td></tr>
                     <tr><th>Server</th><td>{{ latest_server.name if latest_server else 'wird automatisch angelegt' }}</td></tr>
                     <tr><th>Standard</th><td>{{ effective_server_type }} / {{ effective_location }} / {{ effective_image }}</td></tr>
                 </tbody>
             </table>
+
+            <div class="runtime-status-grid">
+                <div class="runtime-box">
+                    <strong>Aktive Version</strong>
+                    <div>{{ runtime_state.active_version or '-' }}</div>
+                </div>
+                <div class="runtime-box">
+                    <strong>Aktive Quelle</strong>
+                    <div>{{ runtime_state.active_source_reference or '-' }}</div>
+                </div>
+                <div class="runtime-box">
+                    <strong>Letzter erfolgreicher Deploy</strong>
+                    <div>
+                        {% if last_successful_deployment %}
+                            <a href="{{ url_for('dashboard.deployment_detail', deployment_id=last_successful_deployment.id) }}">#{{ last_successful_deployment.id }}</a>
+                            ({{ last_successful_deployment.successful_at or last_successful_deployment.updated_at }})
+                        {% else %}
+                            -
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="runtime-box">
+                    <strong>Letzter Healthcheck</strong>
+                    <div>{{ runtime_state.last_healthcheck_at or '-' }}</div>
+                </div>
+            </div>
+
+            <p class="muted" style="margin-top:8px;">{{ runtime_state.reason if runtime_state else '' }}</p>
+            <div class="actions" style="margin-top: 8px;">
+                <button type="button" id="runtime_healthcheck_btn" class="secondary">Healthcheck jetzt ausfuehren</button>
+            </div>
+            <p id="runtime_healthcheck_meta" class="muted" style="margin-top:6px;"></p>
         </div>
 
         <div class="flori-tip">
@@ -584,6 +631,41 @@
             </details>
         </div>
     </div>
+
+    <div class="card">
+        <h3 class="section-title">8. Healthcheck-Historie</h3>
+        {% if health_history %}
+            <table class="dense-table">
+                <thead>
+                    <tr>
+                        <th>checked_at</th>
+                        <th>target_url</th>
+                        <th>success</th>
+                        <th>status_code</th>
+                        <th>response_time_ms</th>
+                        <th>error_message</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for hc in health_history %}
+                        <tr>
+                            <td>{{ hc.checked_at }}</td>
+                            <td>{{ hc.target_url }}</td>
+                            <td>
+                                {% set hc_class = 'status-success' if hc.success else 'status-failed' %}
+                                <span class="badge {{ hc_class }}">{{ 'true' if hc.success else 'false' }}</span>
+                            </td>
+                            <td>{{ hc.status_code if hc.status_code is not none else '-' }}</td>
+                            <td>{{ hc.response_time_ms if hc.response_time_ms is not none else '-' }}</td>
+                            <td>{{ hc.error_message or '-' }}</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p class="muted">Noch keine Healthchecks gespeichert.</p>
+        {% endif %}
+    </div>
 </div>
 
 <script>
@@ -755,6 +837,32 @@
     }
 
     const baseUrl = "{{ url_for('dashboard.project_runtime_logs', project_id=project.id) }}";
+
+    const healthBtn = document.getElementById("runtime_healthcheck_btn");
+    const healthMeta = document.getElementById("runtime_healthcheck_meta");
+    const healthcheckUrl = "{{ url_for('dashboard.run_project_runtime_healthcheck', project_id=project.id) }}";
+    if (healthBtn && healthMeta) {
+        healthBtn.addEventListener("click", async () => {
+            healthBtn.disabled = true;
+            healthBtn.textContent = "Laedt...";
+            healthMeta.textContent = "Healthcheck laeuft...";
+            try {
+                const response = await fetch(healthcheckUrl, { method: "POST" });
+                const data = await response.json();
+                if (!response.ok) {
+                    healthMeta.textContent = data.error || "Healthcheck fehlgeschlagen";
+                } else {
+                    healthMeta.textContent = "Status: " + data.current_runtime_status + " | " + (data.reason || "-");
+                    window.location.reload();
+                }
+            } catch (err) {
+                healthMeta.textContent = String(err);
+            } finally {
+                healthBtn.disabled = false;
+                healthBtn.textContent = "Healthcheck jetzt ausfuehren";
+            }
+        });
+    }
 
     const setLoading = (isLoading) => {
         button.disabled = isLoading;

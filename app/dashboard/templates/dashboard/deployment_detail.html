@@ -45,6 +45,23 @@
     </div>
 </div>
 
+{% if project_runtime_state %}
+<div class="card">
+    <h3>Projekt Runtime-State</h3>
+    {% set runtime_class = 'status-' ~ project_runtime_state.current_runtime_status if project_runtime_state.current_runtime_status in ['running', 'failed', 'degraded'] else 'status-unknown' %}
+    <table>
+        <tbody>
+            <tr><th>current_runtime_status</th><td><span class="badge {{ runtime_class }}">{{ project_runtime_state.current_runtime_status }}</span></td></tr>
+            <tr><th>active_deployment_id</th><td>{{ project_runtime_state.active_deployment_id or '-' }}</td></tr>
+            <tr><th>active_version</th><td>{{ project_runtime_state.active_version or '-' }}</td></tr>
+            <tr><th>last_successful_deployment_id</th><td>{{ project_runtime_state.last_successful_deployment_id or '-' }}</td></tr>
+            <tr><th>last_healthcheck_at</th><td>{{ project_runtime_state.last_healthcheck_at or '-' }}</td></tr>
+            <tr><th>reason</th><td>{{ project_runtime_state.reason or '-' }}</td></tr>
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
 {% if deployment.status == 'failed' and fix_suggestion %}
 <div class="card">
     <h3>Fix Issue</h3>
