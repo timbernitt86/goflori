@@ -49,6 +49,8 @@ class RepoAnalyzer:
         has_wsgi_py = exists("wsgi.py")
         has_artisan = exists("artisan")
         has_composer_json = exists("composer.json")
+        has_dockerfile = exists("Dockerfile")
+        has_docker_compose = exists("docker-compose.yml") or exists("compose.yaml") or exists("compose.yml")
 
         python_files = [
             item
@@ -66,6 +68,16 @@ class RepoAnalyzer:
             for item, present in [("artisan", has_artisan), ("composer.json", has_composer_json)]
             if present
         ]
+        docker_files = [
+            item
+            for item, present in [
+                ("Dockerfile", has_dockerfile),
+                ("docker-compose.yml", exists("docker-compose.yml")),
+                ("compose.yaml", exists("compose.yaml")),
+                ("compose.yml", exists("compose.yml")),
+            ]
+            if present
+        ]
 
         if has_artisan and has_composer_json:
             return RepoAnalysisResult(
@@ -73,7 +85,7 @@ class RepoAnalyzer:
                 confidence=0.98,
                 relevant_files=laravel_files,
                 framework="laravel",
-                entrypoint="php artisan serve --host=0.0.0.0 --port=8000",
+                entrypoint="php-fpm",
                 port=8000,
                 uses_postgres=exists("docker-compose.yml"),
                 stack_files=laravel_files,
@@ -85,7 +97,7 @@ class RepoAnalyzer:
                 confidence=0.85,
                 relevant_files=laravel_files,
                 framework="laravel",
-                entrypoint="php artisan serve --host=0.0.0.0 --port=8000",
+                entrypoint="php-fpm",
                 port=8000,
                 stack_files=laravel_files,
             )
@@ -111,6 +123,17 @@ class RepoAnalyzer:
                 entrypoint="gunicorn app:app",
                 port=8000,
                 stack_files=python_files,
+            )
+
+        if has_dockerfile or has_docker_compose:
+            return RepoAnalysisResult(
+                detected_stack="docker",
+                confidence=0.8,
+                relevant_files=docker_files,
+                framework="docker",
+                entrypoint="docker compose up -d",
+                port=8000,
+                stack_files=docker_files,
             )
 
         return RepoAnalysisResult(
