@@ -540,23 +540,25 @@ def run_deployment_task(deployment_id: int):
             raise
 
         if ctx.is_update:
-            # Verify Docker is actually installed before skipping prepare_host.
-            # A server may be marked "running" in the DB but still lack Docker
-            # (e.g. freshly provisioned or re-assigned server).
+            # Verify Docker AND nginx are actually installed before skipping prepare_host.
+            # A server may be marked "running" in the DB but still be missing software
+            # (e.g. freshly provisioned, re-assigned, or partially set up server).
             docker_check = executor.ssh.run_one(server.ipv4 or "127.0.0.1", "docker ps")
-            if docker_check.return_code == 0:
+            nginx_check = executor.ssh.run_one(server.ipv4 or "127.0.0.1", "nginx -t")
+            host_ready = docker_check.return_code == 0 and nginx_check.return_code == 0
+            if host_ready:
                 _finish_step_success(
                     deployment,
                     "prepare_host",
-                    stdout="action=skipped\nreason=server_already_live_update_deploy\ndocker_check=ok",
+                    stdout="action=skipped\nreason=server_already_live_update_deploy\ndocker_check=ok\nnginx_check=ok",
                     exit_code=0,
                     metadata={"action": "skipped", "reason": "update_deploy"},
                 )
             else:
-                # Docker not found – run full host preparation despite is_update flag.
+                # Docker or nginx not ready – run full host preparation.
                 logger.info(
-                    "deployment=%s server=%s docker not available (rc=%s), running prepare_host",
-                    deployment.id, server.id, docker_check.return_code,
+                    "deployment=%s server=%s host not ready (docker_rc=%s nginx_rc=%s), running prepare_host",
+                    deployment.id, server.id, docker_check.return_code, nginx_check.return_code,
                 )
                 _run_command_step(deployment, "prepare_host", lambda: executor.prepare_host(server.ipv4 or "127.0.0.1"))
         else:
