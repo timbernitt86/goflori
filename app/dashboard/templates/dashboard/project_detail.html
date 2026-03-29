@@ -67,6 +67,23 @@
         border-radius: 10px;
         border: 1px solid rgba(141, 169, 194, 0.5);
         background: rgba(255, 255, 255, 0.7);
+        min-width: 0;
+    }
+    .runtime-box strong {
+        display: block;
+        margin-bottom: 4px;
+    }
+    .runtime-value {
+        min-width: 0;
+        white-space: normal;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+    }
+    .runtime-meta {
+        display: block;
+        margin-top: 2px;
+        color: var(--ink-500);
+        font-size: 12px;
     }
     @media (max-width: 720px) {
         .project-head-top {
@@ -147,18 +164,18 @@
             <div class="runtime-status-grid">
                 <div class="runtime-box">
                     <strong>Aktive Version</strong>
-                    <div>{{ runtime_state.active_version or '-' }}</div>
+                    <div class="runtime-value">{{ runtime_state.active_version or '-' }}</div>
                 </div>
                 <div class="runtime-box">
                     <strong>Aktive Quelle</strong>
-                    <div>{{ runtime_state.active_source_reference or '-' }}</div>
+                    <div class="runtime-value">{{ runtime_state.active_source_reference or '-' }}</div>
                 </div>
                 <div class="runtime-box">
                     <strong>Letzter erfolgreicher Deploy</strong>
-                    <div>
+                    <div class="runtime-value">
                         {% if last_successful_deployment %}
                             <a href="{{ url_for('dashboard.deployment_detail', deployment_id=last_successful_deployment.id) }}">#{{ last_successful_deployment.id }}</a>
-                            ({{ last_successful_deployment.successful_at or last_successful_deployment.updated_at }})
+                            <span class="runtime-meta">{{ last_successful_deployment.successful_at or last_successful_deployment.updated_at }}</span>
                         {% else %}
                             -
                         {% endif %}
@@ -166,11 +183,11 @@
                 </div>
                 <div class="runtime-box">
                     <strong>Letzter Healthcheck</strong>
-                    <div>{{ runtime_state.last_healthcheck_at or '-' }}</div>
+                    <div class="runtime-value">{{ runtime_state.last_healthcheck_at or '-' }}</div>
                 </div>
             </div>
 
-            <p class="muted" style="margin-top:8px;">{{ runtime_state.reason if runtime_state else '' }}</p>
+            <p class="muted runtime-value" style="margin-top:8px;">{{ runtime_state.reason if runtime_state else '' }}</p>
             <div class="actions" style="margin-top: 8px;">
                 <button type="button" id="runtime_healthcheck_btn" class="secondary">Healthcheck jetzt ausfuehren</button>
             </div>

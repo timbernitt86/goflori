@@ -97,6 +97,83 @@ def _has_runtime_warnings(active_deployment: Deployment | None) -> bool:
     return False
 
 
+def _humanize_healthcheck_failure(raw_error: str, target_url: str) -> tuple[str, str]:
+    error_text = (raw_error or "").strip()
+    lower = error_text.lower()
+
+    if "hostname mismatch" in lower or "certificate is not valid for" in lower:
+        return (
+            "HTTPS-Zertifikat passt nicht zur Domain (Hostname-Mismatch). "
+            "Bitte DNS-Eintrag und Zertifikat (inkl. www/non-www) pruefen.",
+            "tls_hostname_mismatch",
+        )
+
+    if "certificate verify failed" in lower or "ssl" in lower:
+        return (
+            "HTTPS-Zertifikat konnte nicht verifiziert werden. "
+            "Bitte Zertifikat, Kette und Domain-Zuordnung pruefen.",
+            "tls_verification_failed",
+        )
+
+    if "read timed out" in lower or "connect timeout" in lower or "timed out" in lower:
+        return (
+            f"Healthcheck-Timeout auf {target_url}. "
+            "Die Anwendung antwortet zu langsam oder ist gerade nicht erreichbar.",
+            "timeout",
+        )
+
+    if "name or service not known" in lower or "nodename nor servname" in lower or "name resolution" in lower:
+        return (
+            "Domain konnte nicht aufgeloest werden. Bitte DNS-Eintrag pruefen.",
+            "dns_resolution_failed",
+        )
+
+    if "connection refused" in lower:
+        return (
+            "Verbindung abgelehnt. Der Dienst laeuft vermutlich nicht auf dem Zielserver/Port.",
+            "connection_refused",
+        )
+
+    if "max retries exceeded" in lower:
+        return (
+            f"Healthcheck konnte {target_url} nicht erreichen (mehrere Verbindungsversuche fehlgeschlagen).",
+            "max_retries_exceeded",
+        )
+
+    return (
+        "Healthcheck fehlgeschlagen. Details im technischen Fehlerprotokoll.",
+        "unknown_request_error",
+    )
+
+
+def _humanize_http_status_failure(status_code: int, target_url: str) -> tuple[str, str]:
+    if 500 <= status_code <= 599:
+        return (
+            f"Anwendung ist erreichbar, liefert aber Serverfehler (HTTP {status_code}) auf {target_url}.",
+            "http_5xx",
+        )
+    if 400 <= status_code <= 499:
+        return (
+            f"Anwendung ist erreichbar, liefert aber Clientfehler (HTTP {status_code}) auf {target_url}.",
+            "http_4xx",
+        )
+    return (
+        f"Healthcheck lieferte unerwarteten HTTP-Status {status_code} auf {target_url}.",
+        "http_unexpected_status",
+    )
+
+
+def _friendly_health_reason(entry: ProjectHealthCheck) -> str:
+    details = entry.details if isinstance(entry.details, dict) else {}
+    user_msg = details.get("user_message") if isinstance(details, dict) else None
+    if isinstance(user_msg, str) and user_msg.strip():
+        return user_msg
+
+    fallback = entry.error_message or "Healthcheck fehlgeschlagen"
+    friendly, _ = _humanize_healthcheck_failure(fallback, entry.target_url)
+    return friendly
+
+
 def mark_deployment_as_active(project: Project, deployment: Deployment, *, commit: bool = True) -> None:
     if deployment.project_id != project.id:
         raise ValueError("Deployment does not belong to project")
@@ -169,28 +246,42 @@ def run_project_healthcheck(
         response = requests.get(target, timeout=timeout_seconds, allow_redirects=True)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         success = 200 <= response.status_code < 400
+        err_msg = None
+        err_code = None
+        if not success:
+            err_msg, err_code = _humanize_http_status_failure(response.status_code, target)
         return record_healthcheck_result(
             project,
             target_url=target,
             success=success,
             status_code=response.status_code,
             response_time_ms=elapsed_ms,
-            error_message=None if success else f"HTTP status {response.status_code}",
+            error_message=err_msg,
             deployment_id=deployment.id if deployment else None,
-            details={"redirected": len(response.history) > 0},
+            details={
+                "redirected": len(response.history) > 0,
+                "error_code": err_code,
+                "raw_status": response.status_code,
+            },
             commit=commit,
         )
     except requests.RequestException as exc:
         elapsed_ms = int((time.perf_counter() - started) * 1000)
+        user_message, error_code = _humanize_healthcheck_failure(str(exc), target)
         return record_healthcheck_result(
             project,
             target_url=target,
             success=False,
             status_code=None,
             response_time_ms=elapsed_ms,
-            error_message=str(exc),
+            error_message=user_message,
             deployment_id=deployment.id if deployment else None,
-            details={"exception_type": type(exc).__name__},
+            details={
+                "exception_type": type(exc).__name__,
+                "error_code": error_code,
+                "raw_error": str(exc),
+                "user_message": user_message,
+            },
             commit=commit,
         )
 
@@ -220,7 +311,7 @@ def compute_project_runtime_state(project: Project, *, commit: bool = True) -> P
         reason = "Noch kein Healthcheck vorhanden"
     elif not latest_health.success:
         runtime_status = RUNTIME_FAILED
-        reason = latest_health.error_message or "Healthcheck fehlgeschlagen"
+        reason = _friendly_health_reason(latest_health)
     elif latest_deployment and latest_deployment.status == "failed" and _deployment_sort_time(latest_deployment) >= _deployment_sort_time(active):
         runtime_status = RUNTIME_FAILED
         reason = "Letzter produktiver Deploy fehlgeschlagen"
