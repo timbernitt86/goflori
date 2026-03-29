@@ -374,7 +374,7 @@
                             </td>
                             <td>
                                 {% if meta.get('last_error') %}
-                                    <div class="error-box"><pre>{{ meta.get('last_error') }}</pre></div>
+                                    <details><summary style="cursor:pointer;color:#c81e1e;font-size:12px;">Fehler anzeigen</summary><div class="error-box" style="margin-top:6px;"><pre>{{ meta.get('last_error') }}</pre></div></details>
                                 {% else %}
                                     <span class="muted">-</span>
                                 {% endif %}
