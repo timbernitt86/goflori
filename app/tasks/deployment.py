@@ -627,15 +627,6 @@ def run_deployment_task(deployment_id: int):
                 "start_containers",
                 lambda: executor.update_containers(server.ipv4 or "127.0.0.1", ctx),
             )
-            # Reverse proxy, DNS and SSL are already configured – skip.
-            for skip_step in ("configure_reverse_proxy", "check_dns", "run_certbot", "verify_https"):
-                _finish_step_success(
-                    deployment,
-                    skip_step,
-                    stdout=f"action=skipped\nreason=update_deploy\nserver_already_configured",
-                    exit_code=0,
-                    metadata={"action": "skipped", "reason": "update_deploy"},
-                )
         else:
             _run_command_step(
                 deployment,
@@ -643,11 +634,25 @@ def run_deployment_task(deployment_id: int):
                 lambda: executor.start_containers(server.ipv4 or "127.0.0.1", ctx),
             )
 
-            _run_command_step(
-                deployment,
-                "configure_reverse_proxy",
-                lambda: executor.configure_reverse_proxy(server.ipv4 or "127.0.0.1", ctx),
-            )
+        # configure_reverse_proxy is idempotent (ln -sf / nginx reload) and must
+        # run on every deploy – including updates – to handle servers whose first
+        # deploy failed before reaching this step.
+        _run_command_step(
+            deployment,
+            "configure_reverse_proxy",
+            lambda: executor.configure_reverse_proxy(server.ipv4 or "127.0.0.1", ctx),
+        )
+
+        if ctx.is_update:
+            # DNS and SSL are already configured on update deploys – skip.
+            for skip_step in ("check_dns", "run_certbot", "verify_https"):
+                _finish_step_success(
+                    deployment,
+                    skip_step,
+                    stdout=f"action=skipped\nreason=update_deploy\nserver_already_configured",
+                    exit_code=0,
+                    metadata={"action": "skipped", "reason": "update_deploy"},
+                )
 
         if not ctx.is_update:
             _start_step(deployment, "check_dns")
