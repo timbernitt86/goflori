@@ -3,6 +3,26 @@
 {% block title %}Projekte | Dashboard{% endblock %}
 
 {% block content %}
+<style>
+    .projects-card {
+        overflow: hidden;
+    }
+
+    .projects-table-wrap {
+        width: 100%;
+        overflow-x: auto;
+    }
+
+    .projects-table-wrap table {
+        min-width: 980px;
+    }
+
+    .projects-table-wrap td {
+        word-break: break-word;
+        overflow-wrap: anywhere;
+    }
+</style>
+
 <div class="card hero">
     <h1 style="margin-bottom: 8px;">Build fast. goflori deployt.</h1>
     <p style="max-width: 760px;">
@@ -20,50 +40,52 @@
 
 <div class="row">
     <div class="col" style="flex: 2;">
-        <div class="card">
+        <div class="card projects-card">
             <h2>Projekte</h2>
             {% if projects %}
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>Status</th>
-                            <th>Runtime</th>
-                            <th>Aktive Version</th>
-                            <th>Letzter Erfolg</th>
-                            <th>Domain</th>
-                            <th>Repository</th>
-                            <th>Deployments</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for project in projects %}
-                            {% set runtime = runtime_state_by_project.get(project.id, {}) %}
+                <div class="projects-table-wrap">
+                    <table>
+                        <thead>
                             <tr>
-                                <td><a href="{{ url_for('dashboard.project_detail', project_id=project.id) }}">{{ project.name }}</a></td>
-                                <td>
-                                    {% set status_class = 'status-' ~ project.status if project.status in ['pending', 'running', 'success', 'failed'] else 'status-unknown' %}
-                                    <span class="badge {{ status_class }}">{{ project.status }}</span>
-                                </td>
-                                <td>
-                                    {% set runtime_class = 'status-' ~ runtime.get('current_runtime_status') if runtime.get('current_runtime_status') in ['running', 'failed', 'degraded'] else 'status-unknown' %}
-                                    <span class="badge {{ runtime_class }}">{{ runtime.get('current_runtime_status', '-') }}</span>
-                                </td>
-                                <td>{{ runtime.get('active_version') or '-' }}</td>
-                                <td>
-                                    {% if runtime.get('last_successful_deployment_id') %}
-                                        <a href="{{ url_for('dashboard.deployment_detail', deployment_id=runtime.get('last_successful_deployment_id')) }}">#{{ runtime.get('last_successful_deployment_id') }}</a>
-                                    {% else %}
-                                        -
-                                    {% endif %}
-                                </td>
-                                <td>{{ project.domain or '-' }}</td>
-                                <td>{{ project.repository.repo_url if project.repository else '-' }}</td>
-                                <td>{{ deployment_counts.get(project.id, 0) }}</td>
+                                <th>Name</th>
+                                <th>Status</th>
+                                <th>Runtime</th>
+                                <th>Aktive Version</th>
+                                <th>Letzter Erfolg</th>
+                                <th>Domain</th>
+                                <th>Repository</th>
+                                <th>Deployments</th>
                             </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
+                        </thead>
+                        <tbody>
+                            {% for project in projects %}
+                                {% set runtime = runtime_state_by_project.get(project.id, {}) %}
+                                <tr>
+                                    <td><a href="{{ url_for('dashboard.project_detail', project_id=project.id) }}">{{ project.name }}</a></td>
+                                    <td>
+                                        {% set status_class = 'status-' ~ project.status if project.status in ['pending', 'running', 'success', 'failed'] else 'status-unknown' %}
+                                        <span class="badge {{ status_class }}">{{ project.status }}</span>
+                                    </td>
+                                    <td>
+                                        {% set runtime_class = 'status-' ~ runtime.get('current_runtime_status') if runtime.get('current_runtime_status') in ['running', 'failed', 'degraded'] else 'status-unknown' %}
+                                        <span class="badge {{ runtime_class }}">{{ runtime.get('current_runtime_status', '-') }}</span>
+                                    </td>
+                                    <td>{{ runtime.get('active_version') or '-' }}</td>
+                                    <td>
+                                        {% if runtime.get('last_successful_deployment_id') %}
+                                            <a href="{{ url_for('dashboard.deployment_detail', deployment_id=runtime.get('last_successful_deployment_id')) }}">#{{ runtime.get('last_successful_deployment_id') }}</a>
+                                        {% else %}
+                                            -
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ project.domain or '-' }}</td>
+                                    <td>{{ project.repository.repo_url if project.repository else '-' }}</td>
+                                    <td>{{ deployment_counts.get(project.id, 0) }}</td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
             {% else %}
                 <p>Keine Projekte vorhanden.</p>
             {% endif %}

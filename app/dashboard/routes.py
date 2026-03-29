@@ -37,6 +37,14 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _as_utc_aware(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _is_task_queue_usable() -> tuple[bool, str | None]:
     broker_url = ((current_app.config.get("CELERY") or {}).get("broker_url") or "").strip()
 
@@ -309,7 +317,8 @@ def _refresh_project_runtime_state(project: Project, *, allow_healthcheck: bool 
     if allow_healthcheck:
         stale = latest_health is None
         if latest_health is not None and latest_health.checked_at is not None:
-            stale = (_utcnow() - latest_health.checked_at) > timedelta(minutes=2)
+            checked_at = _as_utc_aware(latest_health.checked_at)
+            stale = (_utcnow() - checked_at) > timedelta(minutes=2) if checked_at else True
         if stale:
             try:
                 run_project_healthcheck(project, deployment=project.active_deployment, commit=False)
