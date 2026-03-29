@@ -1510,15 +1510,31 @@ def project_ssl_run(project_id: int):
         return jsonify({"error": error_message}), 400
 
     domain = project.domain.strip()
+    server_ip = target_server.ipv4 or ""
+
+    # DNS pre-check: domain must point to this server before certbot can succeed.
+    dns_result = DeploymentExecutor().check_dns(domain, server_ip)
+    if not dns_result.matches:
+        return jsonify({
+            "error": (
+                f"DNS-Fehler: {domain} zeigt auf {dns_result.resolved_ip}, "
+                f"erwartet wird {dns_result.expected_ip}. "
+                "Bitte den A-Record aktualisieren und danach erneut versuchen. "
+                "Let's Encrypt kann das Zertifikat erst ausstellen wenn die Domain auf diesen Server zeigt."
+            ),
+            "resolved_ip": dns_result.resolved_ip,
+            "expected_ip": dns_result.expected_ip,
+        }), 400
+
     executor = DeploymentExecutor()
     result = executor.ssh.run_one(
-        target_server.ipv4,
+        server_ip,
         f"certbot --nginx -d {domain} --non-interactive --agree-tos -m admin@{domain}",
     )
     return jsonify({
         "project_id": project.id,
         "domain": domain,
-        "server": {"id": target_server.id, "name": target_server.name, "ipv4": target_server.ipv4},
+        "server": {"id": target_server.id, "name": target_server.name, "ipv4": server_ip},
         "exit_code": result.return_code,
         "stdout": result.stdout,
         "stderr": result.stderr,
