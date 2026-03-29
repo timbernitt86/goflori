@@ -726,10 +726,14 @@
                 if (serverId) body.set("server_id", serverId);
                 const response = await fetch(runUrl, { method: "POST", body });
                 const data = await response.json();
-                if (data.exit_code === 0) {
+                if (data.error) {
+                    sslMeta.textContent = data.error;
+                    sslMeta.style.color = "#c81e1e";
+                } else if (data.exit_code === 0) {
                     sslMeta.textContent = "Zertifikat erfolgreich ausgestellt/erneuert fuer " + data.domain + " auf " + data.server.ipv4;
+                    sslMeta.style.color = "";
                 } else {
-                    sslMeta.textContent = "certbot fehlgeschlagen (exit_code=" + data.exit_code + "): " + (data.stderr || data.stdout || "-");
+                    sslMeta.textContent = "certbot fehlgeschlagen: " + (data.stderr || data.stdout || "-");
                     sslMeta.style.color = "#c81e1e";
                 }
             } catch (err) {
