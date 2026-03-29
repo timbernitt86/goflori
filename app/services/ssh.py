@@ -50,6 +50,9 @@ ALLOWED_COMMAND_PREFIXES: tuple[str, ...] = (
     "docker volume prune",
     "docker images",
     "docker logs",
+    "curl -SL https://",
+    "chmod +x /usr/local/lib/docker/cli-plugins/",
+    "mkdir -p /usr/local/lib/docker/cli-plugins",
 )
 
 

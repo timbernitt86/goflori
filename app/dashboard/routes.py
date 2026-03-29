@@ -1161,7 +1161,7 @@ def project_runtime_logs(project_id: int):
         return jsonify({"error": error_message}), 400
 
     deploy_dir = f"/opt/orbital/{project.slug}"
-    command = f"docker-compose -f {deploy_dir}/docker-compose.yml logs --tail=200 web"
+    command = f"docker compose -f {deploy_dir}/docker-compose.yml logs --tail=200 web"
 
     executor = DeploymentExecutor()
     result = executor.ssh.run_one(target_server.ipv4, command)
@@ -1200,7 +1200,7 @@ def project_container_status(project_id: int):
     compose_file = f"{deploy_dir}/docker-compose.yml"
     executor = DeploymentExecutor()
 
-    id_cmd = f"docker-compose -f {compose_file} ps -q web"
+    id_cmd = f"docker compose -f {compose_file} ps -q web"
     id_result = executor.ssh.run_one(target_server.ipv4, id_cmd)
     container_id = (id_result.stdout or "").strip()
 
@@ -1293,7 +1293,7 @@ def restart_project_container(project_id: int):
         return redirect(url_for("dashboard.project_detail", project_id=project.id))
 
     deploy_dir = f"/opt/orbital/{project.slug}"
-    command = f"docker-compose -f {deploy_dir}/docker-compose.yml restart web"
+    command = f"docker compose -f {deploy_dir}/docker-compose.yml restart web"
     result = DeploymentExecutor().ssh.run_one(target_server.ipv4, command)
 
     if result.return_code == 0:
@@ -1323,8 +1323,8 @@ def delete_project_container(project_id: int):
 
     deploy_dir = f"/opt/orbital/{project.slug}"
     commands = [
-        f"docker-compose -f {deploy_dir}/docker-compose.yml stop web",
-        f"docker-compose -f {deploy_dir}/docker-compose.yml rm -f -s web",
+        f"docker compose -f {deploy_dir}/docker-compose.yml stop web",
+        f"docker compose -f {deploy_dir}/docker-compose.yml rm -f -s web",
     ]
     results = DeploymentExecutor().ssh.run_many(target_server.ipv4, commands)
     failed = [item for item in results if item.return_code != 0]
@@ -1407,7 +1407,7 @@ def fix_deployment_issue(deployment_id: int):
 
     if action == "restart_container":
         deploy_dir = f"/opt/orbital/{project.slug}"
-        result = executor.ssh.run_one(target_server.ipv4, f"docker-compose -f {deploy_dir}/docker-compose.yml restart web")
+        result = executor.ssh.run_one(target_server.ipv4, f"docker compose -f {deploy_dir}/docker-compose.yml restart web")
         if result.return_code == 0:
             flash("Fix Issue ausgefuehrt: Web-Container wurde neu gestartet.", "success")
         else:
