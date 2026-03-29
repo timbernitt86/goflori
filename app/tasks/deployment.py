@@ -7,7 +7,7 @@ from typing import Any
 
 from app.extensions import db
 from app.models import ActivityLog, Deployment, DeploymentStep, Project, Server
-from app.services.error_analysis import analyze_deployment_failure
+from app.services.error_analysis import analyze_deployment_errors, analyze_deployment_failure
 from app.services.project_state_engine import (
     compute_project_runtime_state,
     mark_deployment_as_active,
@@ -378,6 +378,9 @@ def _finish_step_failed(
 
 
 def _latest_error_analysis(deployment: Deployment) -> dict | None:
+    if isinstance(deployment.error_analysis_json, dict) and deployment.error_analysis_json.get("error_type"):
+        return deployment.error_analysis_json
+
     for step in sorted(deployment.steps, key=lambda s: (s.order_index, s.id), reverse=True):
         if step.status != "failed":
             continue
@@ -1114,6 +1117,10 @@ def run_deployment_task(deployment_id: int):
         _fail_running_steps(deployment, exc)
         deployment.status = "failed"
         deployment.successful = False
+
+        # Error Analysis Engine v2: deployment-wide classification with primary/secondary errors.
+        deployment.error_analysis_json = analyze_deployment_errors(deployment)
+
         analysis = _latest_error_analysis(deployment)
         if analysis:
             deployment.error_message = (

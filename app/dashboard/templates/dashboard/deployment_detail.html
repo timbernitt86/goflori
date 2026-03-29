@@ -82,10 +82,46 @@
     <table>
         <tbody>
             <tr><th>error_type</th><td><strong>{{ deployment_error_analysis.error_type }}</strong></td></tr>
+            <tr><th>confidence</th><td>{{ deployment_error_analysis.confidence if deployment_error_analysis.confidence is not none else '-' }}</td></tr>
+            <tr><th>affected_step</th><td>{{ deployment_error_analysis.affected_step or '-' }}</td></tr>
             <tr><th>probable_cause</th><td>{{ deployment_error_analysis.probable_cause }}</td></tr>
             <tr><th>suggested_fix</th><td>{{ deployment_error_analysis.suggested_fix }}</td></tr>
+            <tr>
+                <th>matched_patterns</th>
+                <td>
+                    {% if deployment_error_analysis.matched_patterns %}
+                        {{ deployment_error_analysis.matched_patterns | join(', ') }}
+                    {% else %}
+                        -
+                    {% endif %}
+                </td>
+            </tr>
         </tbody>
     </table>
+
+    {% if deployment_error_analysis.secondary_errors %}
+        <p><strong>Sekundaere Fehlerbilder</strong></p>
+        <table>
+            <thead>
+                <tr>
+                    <th>error_type</th>
+                    <th>confidence</th>
+                    <th>probable_cause</th>
+                    <th>suggested_fix</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in deployment_error_analysis.secondary_errors %}
+                    <tr>
+                        <td>{{ item.error_type }}</td>
+                        <td>{{ item.confidence }}</td>
+                        <td>{{ item.probable_cause }}</td>
+                        <td>{{ item.suggested_fix }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
     <p class="muted" style="margin-top: 8px;">Die Analyse basiert auf den aktuellen Step-Logs (stdout/stderr).</p>
 </div>
 {% endif %}

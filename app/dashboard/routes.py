@@ -498,6 +498,12 @@ def _extract_error_analysis(step: DeploymentStep | None) -> dict | None:
     return None
 
 
+def _extract_deployment_error_analysis(deployment: Deployment, step: DeploymentStep | None = None) -> dict | None:
+    if isinstance(deployment.error_analysis_json, dict) and deployment.error_analysis_json.get("error_type"):
+        return deployment.error_analysis_json
+    return _extract_error_analysis(step)
+
+
 def _latest_failed_step(deployment: Deployment) -> DeploymentStep | None:
     steps = sorted(deployment.steps, key=lambda s: (s.order_index, s.id), reverse=True)
     return next((step for step in steps if step.status == "failed"), None)
@@ -505,7 +511,7 @@ def _latest_failed_step(deployment: Deployment) -> DeploymentStep | None:
 
 def _suggest_fix_issue(error_analysis: dict | None, failed_step_name: str | None) -> dict:
     error_type = (error_analysis or {}).get("error_type")
-    if error_type == "env_missing":
+    if error_type in {"missing_env", "env_missing"}:
         return {
             "action": "redeploy",
             "title": "Fix Issue",
@@ -519,7 +525,7 @@ def _suggest_fix_issue(error_analysis: dict | None, failed_step_name: str | None
             "label": "Nginx neu laden",
             "description": "Prueft die Nginx-Konfiguration und laedt Nginx neu.",
         }
-    if error_type in {"container_start_failure", "port_unreachable", "db_unreachable"} or failed_step_name in {
+    if error_type in {"port_conflict", "db_connection", "build_fail", "container_start_failure", "port_unreachable", "db_unreachable"} or failed_step_name in {
         "start_containers",
         "healthcheck",
     }:
@@ -934,7 +940,7 @@ def project_detail(project_id: int):
         steps = sorted(deployment.steps, key=lambda s: (s.order_index, s.id))
         failed_steps = [step for step in steps if step.status == "failed"]
         latest_failed_step = failed_steps[-1] if failed_steps else None
-        latest_analysis = _extract_error_analysis(latest_failed_step)
+        latest_analysis = _extract_deployment_error_analysis(deployment, latest_failed_step)
         fix_suggestion = _suggest_fix_issue(latest_analysis, latest_failed_step.name if latest_failed_step else None)
         target_server = _resolve_target_server(project, deployment)
 
@@ -1539,7 +1545,7 @@ def deployment_detail(deployment_id: int):
 
     steps = sorted(deployment.steps, key=lambda s: (s.order_index, s.id))
     latest_failed_step = _latest_failed_step(deployment)
-    deployment_error_analysis = _extract_error_analysis(latest_failed_step)
+    deployment_error_analysis = _extract_deployment_error_analysis(deployment, latest_failed_step)
     fix_suggestion = _suggest_fix_issue(deployment_error_analysis, latest_failed_step.name if latest_failed_step else None)
     step_status = {step.name: step.status for step in steps}
     target_server = _resolve_target_server(deployment.project, deployment)
@@ -1579,7 +1585,7 @@ def fix_deployment_issue(deployment_id: int):
         return redirect(url_for("dashboard.deployment_detail", deployment_id=deployment.id))
 
     failed_step = _latest_failed_step(deployment)
-    error_analysis = _extract_error_analysis(failed_step)
+    error_analysis = _extract_deployment_error_analysis(deployment, failed_step)
     suggestion = _suggest_fix_issue(error_analysis, failed_step.name if failed_step else None)
     requested_action = (request.form.get("action") or "").strip()
     action = requested_action or suggestion["action"]

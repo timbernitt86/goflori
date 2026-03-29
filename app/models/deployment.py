@@ -18,6 +18,7 @@ class Deployment(TimestampMixin, db.Model):
     artifact_snapshot_path = db.Column(db.String(1000), nullable=True)
     output = db.Column(db.Text, nullable=True)
     error_message = db.Column(db.Text, nullable=True)
+    error_analysis_json = db.Column(db.JSON, nullable=True)
 
     project = db.relationship("Project", back_populates="deployments", foreign_keys=[project_id])
     server = db.relationship("Server", foreign_keys=[server_id])
@@ -38,6 +39,7 @@ class Deployment(TimestampMixin, db.Model):
             "artifact_snapshot_path": self.artifact_snapshot_path,
             "output": self.output,
             "error_message": self.error_message,
+            "error_analysis_json": self.error_analysis_json,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }

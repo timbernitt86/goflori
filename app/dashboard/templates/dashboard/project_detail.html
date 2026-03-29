@@ -338,7 +338,30 @@
 
     <div class="card">
         <h3 class="section-title">4. App-Einstellungen</h3>
-        <p class="section-subtitle">Bulk-Edit zuerst, bestehende Variablen und Einzelerstellung nur bei Bedarf.</p>
+        <p class="section-subtitle">Hier trägst du nur Werte ein, die deine App zum Starten braucht (z. B. Datenbank-Zugang).</p>
+
+        <div class="flori-tip" style="margin-top: 0;">
+            <div class="flori-avatar">F</div>
+            <div>
+                <strong>Muss ich hier etwas tun?</strong>
+                {% if project.environment_variables %}
+                    Deine App-Einstellungen sind bereits gesetzt. Nur anpassen, wenn sich etwas geaendert hat.
+                {% else %}
+                    Wahrscheinlich ja: Wenn deine App ENV-Variablen erwartet (z. B. DATABASE_URL, SECRET_KEY), bitte hier eintragen.
+                {% endif %}
+                <div class="muted" style="margin-top: 6px;">
+                    Typische Beispiele: DATABASE_URL, SECRET_KEY, API_TOKEN, SMTP_HOST.
+                </div>
+            </div>
+        </div>
+
+        <details style="margin-top: 10px;">
+            <summary>Beispiel anzeigen (kopieren und anpassen)</summary>
+            <pre>DATABASE_URL=postgresql://user:pass@db:5432/app
+SECRET_KEY=change-me
+API_TOKEN=...
+APP_ENV=production</pre>
+        </details>
 
         <form method="post" action="{{ url_for('dashboard.add_project_env', project_id=project.id) }}">
             <label for="env-bulk">Eine Zeile pro Variable: KEY=VALUE</label>
