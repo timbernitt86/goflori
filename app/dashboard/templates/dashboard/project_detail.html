@@ -197,20 +197,17 @@
         <div class="flori-tip">
             <div class="flori-avatar">F</div>
             <div>
-                <strong>Naechster sinnvoller Schritt:</strong>
-                {% if project.status in ['draft', 'pending'] %}
-                    {% if not quickstart_state.has_repository %}
-                        Zuerst Repository-Link setzen, dann direkt deployen.
+                <strong>Naechster sinnvoller Schritt:</strong> {{ next_step_guidance.headline if next_step_guidance else 'Status wird ermittelt.' }}
+                <div style="margin-top: 6px;">
+                    <strong>Live-Status:</strong>
+                    {% if next_step_guidance and next_step_guidance.is_live %}
+                        <span class="badge status-success">live</span>
                     {% else %}
-                        Projekt ist vorbereitet. Jetzt den ersten Live-Deploy starten.
+                        <span class="badge status-failed">nicht live</span>
                     {% endif %}
-                {% elif project.status == 'running' %}
-                    Deployment laeuft gerade. Runtime-Status und Logs findest du weiter unten.
-                {% elif project.status == 'failed' %}
-                    Letztes Deployment ist fehlgeschlagen. Pruefe die juengste Fehlermeldung im Deployment-Bereich.
-                {% else %}
-                    Projekt ist live. Fuer Code-Aenderungen reicht meist ein Redeploy.
-                {% endif %}
+                </div>
+                <div class="muted" style="margin-top: 6px;"><strong>Muss der Nutzer etwas machen?</strong> {{ next_step_guidance.user_action if next_step_guidance else '-' }}</div>
+                <div class="muted" style="margin-top: 4px;"><strong>Kann Flori das fixen?</strong> {{ next_step_guidance.flori_action if next_step_guidance else '-' }}</div>
             </div>
         </div>
 

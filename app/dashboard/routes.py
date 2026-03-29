@@ -339,6 +339,96 @@ def _refresh_project_runtime_state(project: Project, *, allow_healthcheck: bool 
     }
 
 
+def _build_next_step_guidance(
+    project: Project,
+    runtime_state: dict,
+    deployments: list[Deployment],
+    deployment_meta: dict,
+) -> dict:
+    runtime_status = (runtime_state or {}).get("current_runtime_status") or "unknown"
+    runtime_reason = (runtime_state or {}).get("reason") or ""
+    active_deployment_id = (runtime_state or {}).get("active_deployment_id")
+
+    latest_deployment = deployments[0] if deployments else None
+    latest_meta = deployment_meta.get(latest_deployment.id, {}) if latest_deployment else {}
+    latest_error = (latest_meta.get("last_error") or "") if isinstance(latest_meta, dict) else ""
+
+    combined_error = f"{runtime_reason}\n{latest_error}".lower()
+    has_dns_issue = "dns-pruefung fehlgeschlagen" in combined_error or "domain zeigt nicht" in combined_error
+    has_tls_issue = "zertifikat" in combined_error or "tls" in combined_error or "ssl" in combined_error
+
+    if runtime_status == "running":
+        if latest_deployment and latest_deployment.status == "failed" and active_deployment_id:
+            user_action = "Pruefe den Fehler des letzten Deployments und fuehre danach Redeploy aus."
+            flori_action = "Flori kann den Redeploy und die Runtime-Pruefung automatisch erneut ausfuehren."
+            if has_dns_issue:
+                user_action = "Ja, Nutzer muss handeln: A-Record der Domain auf die Ziel-IP setzen."
+                flori_action = "Flori kann nach DNS-Fix automatisch redeployen und certbot/Healthcheck erneut laufen lassen."
+            elif has_tls_issue:
+                user_action = "Ja, Nutzer muss Domain-/Zertifikatszuordnung pruefen (www/non-www)."
+                flori_action = "Flori kann danach certbot erneut ausfuehren und den Runtime-State aktualisieren."
+
+            return {
+                "is_live": True,
+                "headline": "Projekt ist LIVE (aktive Version laeuft), aber der letzte Deploy ist fehlgeschlagen.",
+                "user_action": user_action,
+                "flori_action": flori_action,
+            }
+
+        return {
+            "is_live": True,
+            "headline": "Projekt ist LIVE und erreichbar.",
+            "user_action": "Kein akuter Handlungsbedarf. Fuer Code-Aenderungen reicht meist ein Redeploy.",
+            "flori_action": "Flori kann weiter Runtime-Checks, Deployments und Logs uebernehmen.",
+        }
+
+    if runtime_status == "degraded":
+        user_action = "Bitte Warnursache pruefen und danach Redeploy oder Healthcheck erneut ausfuehren."
+        flori_action = "Flori kann Healthcheck/Container-Checks erneut ausfuehren und den Status aktualisieren."
+        if has_dns_issue:
+            user_action = "Ja, Nutzer muss handeln: DNS A-Record auf die Ziel-IP korrigieren."
+            flori_action = "Flori kann nach DNS-Korrektur certbot, Healthcheck und Redeploy erneut ausfuehren."
+        elif has_tls_issue:
+            user_action = "Ja, Nutzer muss Zertifikats-/Domain-Mapping pruefen (www/non-www)."
+            flori_action = "Flori kann certbot erneut starten und die Erreichbarkeit danach pruefen."
+
+        return {
+            "is_live": bool(active_deployment_id),
+            "headline": "Projekt ist LIVE, aber im Warnzustand (degraded)." if active_deployment_id else "Projekt ist im Warnzustand (degraded).",
+            "user_action": user_action,
+            "flori_action": flori_action,
+        }
+
+    if runtime_status == "failed":
+        user_action = "Pruefe die letzte Fehlermeldung und korrigiere die Ursache, dann Redeploy starten."
+        flori_action = "Flori kann danach Redeploy, certbot und Healthcheck erneut ausfuehren."
+        is_domain_only_issue = (has_dns_issue or has_tls_issue) and bool(active_deployment_id)
+        if has_dns_issue:
+            user_action = "Ja, Nutzer muss handeln: A-Record auf die Ziel-IP setzen."
+            flori_action = "Flori kann nach DNS-Fix den technischen Teil komplett neu ausrollen."
+        elif has_tls_issue:
+            user_action = "Ja, Nutzer muss handeln: Zertifikat/Domain-Zuordnung (www/non-www) korrigieren."
+            flori_action = "Flori kann danach certbot/HTTPS-Checks erneut ausfuehren."
+
+        return {
+            "is_live": bool(active_deployment_id),
+            "headline": (
+                "Projekt ist LIVE auf Server-Ebene, aber ueber die Domain aktuell nicht erreichbar."
+                if is_domain_only_issue
+                else "Projekt ist aktuell NICHT live erreichbar."
+            ),
+            "user_action": user_action,
+            "flori_action": flori_action,
+        }
+
+    return {
+        "is_live": project.status == "live",
+        "headline": "Projektstatus wird ermittelt.",
+        "user_action": "Bitte Runtime-Status und letzte Deploy-Logs pruefen.",
+        "flori_action": "Flori kann Healthcheck und Deploy-Validierung erneut ausfuehren.",
+    }
+
+
 def _is_secret_env_key(key: str) -> bool:
     return any(key.upper().endswith(suffix) for suffix in SECRET_ENV_SUFFIXES)
 
@@ -864,6 +954,7 @@ def project_detail(project_id: int):
         }
 
     runtime_state = _refresh_project_runtime_state(project, allow_healthcheck=True)
+    next_step_guidance = _build_next_step_guidance(project, runtime_state, deployments, deployment_meta)
     health_history = (
         ProjectHealthCheck.query.filter_by(project_id=project.id)
         .order_by(ProjectHealthCheck.checked_at.desc(), ProjectHealthCheck.id.desc())
@@ -892,6 +983,7 @@ def project_detail(project_id: int):
         effective_location=project.desired_location or hetzner_defaults.get("default_location"),
         effective_image=project.desired_image or hetzner_defaults.get("default_image"),
         runtime_state=runtime_state,
+        next_step_guidance=next_step_guidance,
         health_history=health_history,
         last_successful_deployment=get_last_successful_deployment(project),
     )
