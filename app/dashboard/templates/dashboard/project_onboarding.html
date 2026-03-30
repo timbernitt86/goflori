@@ -1,0 +1,92 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Neues Projekt deployen | Dashboard{% endblock %}
+
+{% block content %}
+<style>
+    .onboarding-shell {
+        max-width: 760px;
+        margin: 0 auto;
+        display: grid;
+        gap: 14px;
+    }
+
+    .onboarding-form {
+        display: grid;
+        gap: 10px;
+    }
+
+    .onboarding-note {
+        margin: 0;
+        color: var(--ink-500);
+        font-size: 13px;
+    }
+</style>
+
+<div class="onboarding-shell">
+    <div class="card hero">
+        <h1>Repo verbinden und deployen</h1>
+        <p>
+            Der Flow ist bewusst minimal: Repository, Domain, Deploy.
+            goflori waehlt die passende Infrastruktur automatisch.
+        </p>
+        <div class="flori-tip">
+            <div class="flori-avatar">F</div>
+            <div>
+                <strong>Automatisch im Hintergrund:</strong>
+                Serverwahl, Basis-Setup, Port-Erkennung, SSL wenn Domain korrekt zeigt.
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Deploy starten</h2>
+        <form method="post" action="{{ url_for('dashboard.create_project') }}" class="onboarding-form">
+            <input type="hidden" name="create_action" value="create_and_deploy">
+            <input type="hidden" name="onboarding_source" value="onboarding">
+
+            {% if not hetzner_token_configured %}
+                <label for="hetzner_api_token">Hetzner API-Token</label>
+                <input id="hetzner_api_token" name="hetzner_api_token" placeholder="einmalig hinterlegen" autocomplete="off" {% if require_hetzner_token %}required{% endif %}>
+            {% endif %}
+
+            <label style="display:flex;align-items:center;gap:.5rem;margin-top:.2rem;">
+                <input type="checkbox" name="auto_create_ssh_key" value="1" checked>
+                SSH-Key automatisch erzeugen und bei Hetzner hinterlegen
+            </label>
+
+            <label for="repository_url">Repository</label>
+            <input id="repository_url" name="repository_url" placeholder="https://github.com/org/repo.git" required>
+
+            <label for="domain">Domain</label>
+            <input id="domain" name="domain" placeholder="app.example.com (optional)">
+
+            <details>
+                <summary>Erweiterte Einstellungen</summary>
+
+                <label for="name">Projektname (optional)</label>
+                <input id="name" name="name" placeholder="wird automatisch aus dem Repo erzeugt">
+
+                <label for="repository_branch">Branch</label>
+                <input id="repository_branch" name="repository_branch" value="main">
+
+                <label for="repository_access_token">Zugangstoken (nur private Repos)</label>
+                <input id="repository_access_token" name="repository_access_token" placeholder="token" autocomplete="off">
+
+                <label style="display:flex;align-items:center;gap:.5rem;margin-top:.5rem;">
+                    <input type="checkbox" name="repository_is_private" value="1">
+                    Repository ist privat
+                </label>
+            </details>
+
+            <button type="submit">Deploy</button>
+            <p class="onboarding-note">Server und Infrastruktur werden automatisch konfiguriert.</p>
+            {% if hetzner_token_configured %}
+                <p class="onboarding-note">Hetzner-Token ist bereits im Provider-Setup hinterlegt.</p>
+            {% endif %}
+        </form>
+    </div>
+
+    <p><a href="{{ url_for('dashboard.projects') }}">Zurueck zur Projektliste</a></p>
+</div>
+{% endblock %}

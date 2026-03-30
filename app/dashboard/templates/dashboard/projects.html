@@ -21,6 +21,23 @@
         word-break: break-word;
         overflow-wrap: anywhere;
     }
+
+    .minimal-onboarding {
+        display: grid;
+        gap: 10px;
+    }
+
+    .minimal-note {
+        margin: 0;
+        color: var(--ink-500);
+        font-size: 13px;
+    }
+
+    .advanced-link {
+        display: inline-block;
+        margin-top: 6px;
+        font-size: 13px;
+    }
 </style>
 
 <div class="card hero">
@@ -108,37 +125,40 @@
 
     <div class="col" style="flex: 1;">
         <div class="card hero">
-            <h2>Schnellstart</h2>
+            <h2>Schnellstart: In 60 Sekunden live</h2>
             <p>
-                Fuer den ersten Deploy brauchst du nur Projektname und den Link zu deinem Repository.
-                goflori verwendet automatisch sinnvolle Infrastruktur-Defaults.
+                Gib nur Repository und Domain an. Alles andere richtet goflori automatisch fuer dich ein.
             </p>
-            <p class="muted">
-                Standardwerte: {{ hetzner_defaults.default_server_type }}, {{ hetzner_defaults.default_location }}, {{ hetzner_defaults.default_image }}
-            </p>
-            <form method="post" action="{{ url_for('dashboard.create_project') }}">
-                <label for="name">Projektname *</label>
-                <input id="name" name="name" required>
+            <form method="post" action="{{ url_for('dashboard.create_project') }}" class="minimal-onboarding">
+                <input type="hidden" name="create_action" value="create_and_deploy">
+                <input type="hidden" name="onboarding_source" value="projects">
 
-                <label for="repository_url">Repository-Link</label>
-                <input id="repository_url" name="repository_url" placeholder="https://github.com/org/repo.git">
+                {% if not hetzner_token_configured %}
+                    <label for="hetzner_api_token">Hetzner API-Token</label>
+                    <input id="hetzner_api_token" name="hetzner_api_token" placeholder="einmalig hinterlegen" autocomplete="off" {% if require_hetzner_token %}required{% endif %}>
+                {% endif %}
 
-                <label for="domain">Eigene Domain (optional)</label>
-                <input id="domain" name="domain" placeholder="z. B. app.example.com">
+                <label style="display:flex;align-items:center;gap:.5rem;margin-top:.2rem;">
+                    <input type="checkbox" name="auto_create_ssh_key" value="1" checked>
+                    SSH-Key automatisch erzeugen und bei Hetzner hinterlegen
+                </label>
 
-                <label for="env_lines">App-Einstellungen (optional)</label>
-                <textarea id="env_lines" name="env_lines" placeholder="DATABASE_URL=...&#10;API_TOKEN=..."></textarea>
+                <label for="repository_url">Repository</label>
+                <input id="repository_url" name="repository_url" placeholder="https://github.com/org/repo.git" required>
+
+                <label for="domain">Domain</label>
+                <input id="domain" name="domain" placeholder="app.example.com (optional)">
 
                 <details>
-                    <summary>Erweiterte Optionen</summary>
+                    <summary>Erweiterte Einstellungen</summary>
 
-                    <label for="slug">Technischer Kurzname (optional)</label>
-                    <input id="slug" name="slug" placeholder="wird automatisch erzeugt">
+                    <label for="name">Projektname (optional)</label>
+                    <input id="name" name="name" placeholder="wird automatisch aus dem Repo erzeugt">
 
                     <label for="repository_branch">Branch</label>
                     <input id="repository_branch" name="repository_branch" value="main">
 
-                    <label for="repository_access_token">Access Token (nur private Repos)</label>
+                    <label for="repository_access_token">Zugangstoken (nur private Repos)</label>
                     <input id="repository_access_token" name="repository_access_token" placeholder="token" autocomplete="off">
 
                     <label style="display:flex;align-items:center;gap:.5rem;margin-top:.5rem;">
@@ -147,18 +167,19 @@
                     </label>
                 </details>
 
-                <div class="actions">
-                    <button type="submit" name="create_action" value="create_and_deploy">Projekt anlegen und sofort deployen</button>
-                    <button type="submit" name="create_action" value="create" class="secondary">Nur Projekt anlegen</button>
-                </div>
+                <button type="submit">Deploy</button>
+                <p class="minimal-note">Server und Infrastruktur werden automatisch konfiguriert.</p>
+                {% if hetzner_token_configured %}
+                    <p class="minimal-note">Hetzner-Token ist bereits im Provider-Setup hinterlegt.</p>
+                {% endif %}
+                <a class="advanced-link" href="{{ url_for('dashboard.project_onboarding') }}">Zum fokussierten Onboarding</a>
             </form>
 
             <div class="flori-tip">
                 <div class="flori-avatar">F</div>
                 <div>
-                    <strong>Flori Quick UX:</strong>
-                    Der erste Button legt an und startet direkt ein Deployment.
-                    Nutze "Nur Projekt anlegen", wenn du erst Einstellungen pruefen willst.
+                    <strong>Flori hilft im Hintergrund:</strong>
+                    Port-Erkennung, SSL-Pruefung und Infrastruktur-Auswahl laufen automatisch.
                 </div>
             </div>
         </div>

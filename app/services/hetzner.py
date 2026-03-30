@@ -235,6 +235,11 @@ class HetznerClient:
             "location": resolved_location,
             "image": resolved_image,
         }
+        if not ssh_keys:
+            setting = self._provider_setting()
+            preferred_key = (setting.ssh_key_name if setting else "") or ""
+            if preferred_key.strip():
+                ssh_keys = [preferred_key.strip()]
         if ssh_keys:
             payload["ssh_keys"] = ssh_keys
         if user_data:
@@ -443,3 +448,26 @@ class HetznerClient:
                 }
             )
         return sorted(result, key=lambda item: item["name"])
+
+    def create_ssh_key(self, *, name: str, public_key: str, force_live: bool = False) -> dict[str, Any]:
+        key_name = (name or "").strip()
+        key_value = (public_key or "").strip()
+        if not key_name:
+            raise HetznerAPIError("SSH-Key-Name fehlt.", status_code=None)
+        if not key_value:
+            raise HetznerAPIError("SSH Public Key fehlt.", status_code=None)
+
+        if self.dry_run and not force_live:
+            return {"id": 0, "name": key_name, "fingerprint": "dry-run"}
+
+        payload = self._post_json(
+            "/ssh_keys",
+            payload={"name": key_name, "public_key": key_value},
+            timeout=20,
+        )
+        row = payload.get("ssh_key") or {}
+        return {
+            "id": row.get("id"),
+            "name": row.get("name") or key_name,
+            "fingerprint": row.get("fingerprint") or "",
+        }

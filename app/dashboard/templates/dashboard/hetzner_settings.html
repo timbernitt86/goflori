@@ -97,6 +97,15 @@
         >
             Verbindung testen
         </button>
+        <button
+            type="submit"
+            class="secondary"
+            form="hetzner-config-form"
+            formaction="{{ url_for('dashboard.auto_create_hetzner_ssh_key') }}"
+            formmethod="post"
+        >
+            SSH-Key automatisch erstellen
+        </button>
     </div>
     <p class="help-text" style="margin-top:0.5rem;">
         Klicke auf „Verbindung testen", um zu prüfen, ob der eingetragene API-Token funktioniert und Hetzner erreichbar ist.
@@ -224,20 +233,36 @@
 
         <div class="field-group">
             <label for="api_token"><span class="step-badge">1</span> API-Token (Passwort für Hetzner)</label>
-            <input
-                id="api_token"
-                name="api_token"
-                type="password"
-                autocomplete="new-password"
-                placeholder="{% if token_configured %}Bereits gespeichert (aus Sicherheitsgruenden ausgeblendet){% else %}API-Token eingeben{% endif %}"
-            >
+            {% if token_configured %}
+                <p class="field-hint"><strong>API-Token ist bereits hinterlegt.</strong> Zum Aendern bitte zuerst loeschen und danach neu speichern.</p>
+            {% else %}
+                <input
+                    id="api_token"
+                    name="api_token"
+                    type="password"
+                    autocomplete="new-password"
+                    placeholder="API-Token eingeben"
+                >
+            {% endif %}
             <p class="help-text">
                 Diesen Token bekommst du im <strong>Hetzner Cloud Console</strong> unter
                 <em>Projekt → Sicherheit → API-Token → Token erstellen</em>.
                 Er ist wie ein Passwort – gib ihn nirgendwo weiter.<br>
-                <strong>Leer lassen</strong> = der bisherige Token bleibt erhalten.
                 Aus Sicherheitsgründen wird ein gespeicherter Token beim Laden der Seite nicht erneut angezeigt.
             </p>
+            {% if token_configured %}
+                <div class="actions" style="margin-top: 8px;">
+                    <button
+                        type="submit"
+                        class="secondary"
+                        form="hetzner-config-form"
+                        formaction="{{ url_for('dashboard.delete_hetzner_token') }}"
+                        formmethod="post"
+                    >
+                        API-Token loeschen
+                    </button>
+                </div>
+            {% endif %}
         </div>
 
         <div class="field-group">

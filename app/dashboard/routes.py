@@ -1,8 +1,10 @@
 import logging
 import threading
+from io import StringIO
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+import paramiko
 import requests.exceptions
 import redis
 from flask import abort, current_app, flash, jsonify, redirect, render_template, request, url_for
@@ -19,6 +21,7 @@ from app.services.auto_fix import execute_autofix, suggest_autofix_action
 from app.services.hetzner import HetznerAPIError, HetznerClient
 from app.services.execution import DeploymentExecutor, PipelineContext
 from app.services.monitoring_light import compute_light_monitoring_status
+from app.services.onboarding import OnboardingValidationError, create_and_start_deployment, create_project_with_defaults
 from app.services.project_state_engine import (
     compute_project_runtime_state,
     get_last_successful_deployment,
@@ -599,8 +602,8 @@ def _apply_hetzner_settings_from_form(setting: ProviderSetting) -> None:
     ssh_public_key = (request.form.get("ssh_public_key") or "").strip() or None
     ssh_private_key = (request.form.get("ssh_private_key") or "").strip() or None
 
-    # Keep existing token when field is intentionally left empty.
-    if api_token:
+    # Token can only be initially set here. Updating an existing token requires explicit delete first.
+    if api_token and not (setting.api_token or "").strip():
         setting.api_token = api_token
 
     setting.default_location = default_location
@@ -612,6 +615,41 @@ def _apply_hetzner_settings_from_form(setting: ProviderSetting) -> None:
         setting.ssh_public_key = ssh_public_key
     if ssh_private_key:
         setting.ssh_private_key = ssh_private_key
+
+
+def _generate_ssh_key_pair(bits: int = 4096) -> tuple[str, str]:
+    key = paramiko.RSAKey.generate(bits)
+    private_buf = StringIO()
+    key.write_private_key(private_buf)
+    private_key = private_buf.getvalue().strip()
+    public_key = f"{key.get_name()} {key.get_base64()} orbital@goflori"
+    return public_key, private_key
+
+
+def _auto_create_and_register_ssh_key(setting: ProviderSetting) -> tuple[bool, str]:
+    if not (setting.api_token or "").strip():
+        return False, "Bitte zuerst einen Hetzner API-Token speichern."
+
+    key_name = (setting.ssh_key_name or "").strip() or f"orbital-auto-{_utcnow().strftime('%Y%m%d%H%M%S')}"
+    try:
+        existing = HetznerClient().list_ssh_keys(force_live=True)
+    except Exception as exc:
+        return False, f"SSH-Key-Liste konnte nicht geladen werden: {exc}"
+
+    existing_names = {item.get("name") for item in existing if item.get("name")}
+    final_name = key_name
+    suffix = 2
+    while final_name in existing_names:
+        final_name = f"{key_name}-{suffix}"
+        suffix += 1
+
+    public_key, private_key = _generate_ssh_key_pair()
+    created = HetznerClient().create_ssh_key(name=final_name, public_key=public_key, force_live=True)
+
+    setting.ssh_key_name = created.get("name") or final_name
+    setting.ssh_public_key = public_key
+    setting.ssh_private_key = private_key
+    return True, setting.ssh_key_name
 
 
 @bp.before_request
@@ -720,6 +758,50 @@ def save_hetzner_settings():
     return redirect(url_for("dashboard.hetzner_settings"))
 
 
+@bp.post("/settings/hetzner/token/delete")
+def delete_hetzner_token():
+    setting = ProviderSetting.query.filter_by(provider_name="hetzner").first()
+    if not setting or not (setting.api_token or "").strip():
+        flash("Es ist kein Hetzner API-Token gespeichert.", "warning")
+        return redirect(url_for("dashboard.hetzner_settings"))
+
+    setting.api_token = None
+    try:
+        db.session.commit()
+        flash("Hetzner API-Token wurde geloescht.", "success")
+    except Exception:
+        db.session.rollback()
+        logger.exception("Failed to delete Hetzner API token")
+        flash("Hetzner API-Token konnte nicht geloescht werden.", "error")
+
+    return redirect(url_for("dashboard.hetzner_settings"))
+
+
+@bp.post("/settings/hetzner/ssh-key/auto")
+def auto_create_hetzner_ssh_key():
+    setting = ProviderSetting.query.filter_by(provider_name="hetzner").first()
+    if not setting:
+        setting = ProviderSetting(provider_name="hetzner")
+        db.session.add(setting)
+
+    _apply_hetzner_settings_from_form(setting)
+
+    try:
+        ok, result = _auto_create_and_register_ssh_key(setting)
+        if not ok:
+            db.session.rollback()
+            flash(result, "error")
+            return redirect(url_for("dashboard.hetzner_settings"))
+        db.session.commit()
+        flash(f"SSH-Key wurde automatisch erstellt und bei Hetzner registriert ({result}).", "success")
+    except Exception as exc:
+        db.session.rollback()
+        logger.exception("Automatic SSH key setup failed")
+        flash(f"SSH-Key konnte nicht automatisch erstellt werden: {exc}", "error")
+
+    return redirect(url_for("dashboard.hetzner_settings"))
+
+
 @bp.post("/settings/hetzner/test")
 def test_hetzner_connection():
     setting = ProviderSetting.query.filter_by(provider_name="hetzner").first()
@@ -820,6 +902,9 @@ def projects():
     for project in projects_data:
         runtime_state_by_project[project.id] = _refresh_project_runtime_state(project, allow_healthcheck=False)
         monitoring_by_project[project.id] = compute_light_monitoring_status(project, force_refresh=False, persist=True)
+    hetzner_setting = ProviderSetting.query.filter_by(provider_name="hetzner").first()
+    hetzner_token_configured = bool((hetzner_setting.api_token or "").strip()) if hetzner_setting else False
+    require_hetzner_token = not current_app.config.get("ORBITAL_DRY_RUN", True)
     db.session.commit()
 
     return render_template(
@@ -829,54 +914,86 @@ def projects():
         runtime_state_by_project=runtime_state_by_project,
         monitoring_by_project=monitoring_by_project,
         hetzner_defaults=_get_hetzner_defaults(),
+        hetzner_token_configured=hetzner_token_configured,
+        require_hetzner_token=require_hetzner_token,
     )
 
 
 @bp.post("/projects")
 def create_project():
-    create_action = (request.form.get("create_action") or "create").strip()
-    name = (request.form.get("name") or "").strip()
-    slug = (request.form.get("slug") or "").strip()
-    framework = (request.form.get("framework") or "").strip() or None
+    create_action = (request.form.get("create_action") or "create_and_deploy").strip()
+    onboarding_source = (request.form.get("onboarding_source") or "projects").strip()
+    name = (request.form.get("name") or "").strip() or None
+    slug = (request.form.get("slug") or "").strip() or None
     domain = (request.form.get("domain") or "").strip() or None
-    environment = (request.form.get("environment") or "production").strip() or "production"
-    branch = (request.form.get("branch") or "main").strip() or "main"
-    desired_server_type = (request.form.get("desired_server_type") or "").strip() or None
-    desired_location = (request.form.get("desired_location") or "").strip() or None
-    desired_image = (request.form.get("desired_image") or "").strip() or None
-    repository_url = (request.form.get("repository_url") or "").strip()
-    repository_provider = (request.form.get("repository_provider") or "").strip() or _infer_repository_provider(repository_url)
-    repository_branch = (request.form.get("repository_branch") or "").strip() or branch
-    repository_access_token = (request.form.get("repository_access_token") or "").strip() or None
-    repository_is_private = (request.form.get("repository_is_private") or "").strip() in {"1", "true", "on", "yes"}
+    repository_url = (request.form.get("repository_url") or request.form.get("repo_url") or "").strip()
+    repository_branch = (request.form.get("repository_branch") or request.form.get("branch") or "").strip() or "main"
+    repository_access_token = (request.form.get("repository_access_token") or request.form.get("access_token") or "").strip() or None
+    repository_is_private = (request.form.get("repository_is_private") or request.form.get("is_private") or "").strip() in {"1", "true", "on", "yes"}
+    hetzner_api_token = (request.form.get("hetzner_api_token") or "").strip()
+    auto_create_ssh_key = (request.form.get("auto_create_ssh_key") or "").strip() in {"1", "true", "on", "yes"}
     env_lines = request.form.get("env_lines") or ""
 
-    if not name:
-        flash("Projektname ist erforderlich.", "error")
-        return redirect(url_for("dashboard.projects"))
+    setting = ProviderSetting.query.filter_by(provider_name="hetzner").first()
+    if not setting:
+        setting = ProviderSetting(provider_name="hetzner")
+        db.session.add(setting)
 
-    final_slug = _generate_unique_project_slug(name=name, requested_slug=slug)
-    project = Project(
-        company_id=current_user.company_id,
-        name=name,
-        slug=final_slug,
-        framework=framework,
-        environment=environment,
-        domain=domain,
-        desired_server_type=desired_server_type,
-        desired_location=desired_location,
-        desired_image=desired_image,
-        branch=branch,
-    )
+    if hetzner_api_token and not (setting.api_token or "").strip():
+        setting.api_token = hetzner_api_token
 
-    if repository_url:
-        project.repository = Repository(
-            provider=repository_provider,
-            repo_url=repository_url,
+    if create_action == "create_and_deploy" and not current_app.config.get("ORBITAL_DRY_RUN", True):
+        if auto_create_ssh_key and not (setting.ssh_private_key or "").strip():
+            ok, result = _auto_create_and_register_ssh_key(setting)
+            if not ok:
+                db.session.rollback()
+                flash(result, "error")
+                return redirect(redirect_target)
+
+    if create_action == "create_and_deploy" and not current_app.config.get("ORBITAL_DRY_RUN", True):
+        has_token = bool((setting.api_token or "").strip()) if setting else False
+        if not has_token:
+            flash("Bitte hinterlege deinen Hetzner API-Token, damit ein Server erstellt werden kann.", "error")
+            return redirect(redirect_target)
+
+    redirect_target = url_for("dashboard.projects") if onboarding_source == "projects" else url_for("dashboard.project_onboarding")
+    if not repository_url and create_action != "create":
+        flash("Bitte gib einen Repository-Link an.", "error")
+        return redirect(redirect_target)
+
+    if not repository_url and create_action == "create":
+        if not name:
+            flash("Bitte gib einen Projektnamen an.", "error")
+            return redirect(redirect_target)
+
+        hetzner_defaults = _get_hetzner_defaults()
+        project = Project(
+            company_id=current_user.company_id,
+            name=name,
+            slug=_generate_unique_project_slug(name=name, requested_slug=slug),
+            framework=None,
+            environment="production",
+            domain=domain,
+            desired_server_type=hetzner_defaults.get("default_server_type"),
+            desired_location=hetzner_defaults.get("default_location"),
+            desired_image=hetzner_defaults.get("default_image"),
             branch=repository_branch,
-            access_token=repository_access_token,
-            is_private=repository_is_private,
         )
+    else:
+        try:
+            project = create_project_with_defaults(
+                company_id=current_user.company_id,
+                repository_url=repository_url,
+                domain=domain,
+                requested_name=name,
+                requested_slug=slug,
+                repository_branch=repository_branch,
+                repository_access_token=repository_access_token,
+                repository_is_private=repository_is_private,
+            )
+        except OnboardingValidationError as exc:
+            flash(str(exc), "error")
+            return redirect(redirect_target)
 
     _upsert_project_environment(project, env_lines)
 
@@ -885,37 +1002,53 @@ def create_project():
         db.session.commit()
     except IntegrityError as exc:
         db.session.rollback()
-        raw_error = str(getattr(exc, "orig", exc)).lower()
-        if "projects.slug" in raw_error or "unique constraint failed: projects.slug" in raw_error:
-            flash("Projekt konnte nicht erstellt werden, obwohl ein eindeutiger Slug erzeugt wurde. Bitte erneut versuchen.", "error")
-        else:
-            flash("Projekt konnte wegen eines Datenbankkonflikts nicht erstellt werden. Bitte Eingaben pruefen.", "error")
-        logger.exception("Project creation failed with integrity error for name=%s slug=%s", name, final_slug)
-        return redirect(url_for("dashboard.projects"))
+        flash("Projekt konnte gerade nicht angelegt werden. Bitte versuche es erneut.", "error")
+        logger.exception("Project creation failed with integrity error for repository=%s", repository_url)
+        return redirect(redirect_target)
+    except Exception:
+        db.session.rollback()
+        flash("Projekt konnte nicht erstellt werden. Bitte Eingaben pruefen.", "error")
+        logger.exception("Project creation failed for repository=%s", repository_url)
+        return redirect(redirect_target)
 
     if create_action == "create_and_deploy":
-        deployment, created_ok = _create_and_queue_deployment(
+        deployment, created_ok = create_and_start_deployment(
             project,
-            selected_server=None,
-            mode="production",
-            commit_sha=None,
-            trigger_source="dashboard-onboarding",
+            lambda active_project: _create_and_queue_deployment(
+                active_project,
+                selected_server=None,
+                mode="production",
+                commit_sha=None,
+                trigger_source="dashboard-onboarding",
+            ),
         )
         if created_ok and deployment is not None:
             flash(
-                "Projekt wurde erstellt und Deployment direkt gestartet.",
+                "Projekt erstellt. Deployment laeuft jetzt.",
                 "success",
             )
             return redirect(url_for("dashboard.deployment_detail", deployment_id=deployment.id))
 
         flash(
-            "Projekt wurde erstellt, aber das automatische Deployment konnte nicht gestartet werden.",
+            "Projekt wurde erstellt, aber Deployment konnte nicht gestartet werden.",
             "warning",
         )
         return redirect(url_for("dashboard.project_detail", project_id=project.id))
 
     flash(f"Projekt '{project.name}' wurde erstellt.", "success")
     return redirect(url_for("dashboard.project_detail", project_id=project.id))
+
+
+@bp.get("/projects/new")
+def project_onboarding():
+    setting = ProviderSetting.query.filter_by(provider_name="hetzner").first()
+    hetzner_token_configured = bool((setting.api_token or "").strip()) if setting else False
+    require_hetzner_token = not current_app.config.get("ORBITAL_DRY_RUN", True)
+    return render_template(
+        "dashboard/project_onboarding.html",
+        hetzner_token_configured=hetzner_token_configured,
+        require_hetzner_token=require_hetzner_token,
+    )
 
 
 @bp.post("/projects/<int:project_id>/setup")
