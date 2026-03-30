@@ -15,13 +15,16 @@ from sqlalchemy.orm import joinedload
 from app.dashboard import bp
 from app.extensions import db
 from app.models import ActivityLog, Deployment, DeploymentStep, EnvironmentVariable, Project, ProjectHealthCheck, ProviderSetting, Repository, Server
+from app.services.auto_fix import execute_autofix, suggest_autofix_action
 from app.services.hetzner import HetznerAPIError, HetznerClient
 from app.services.execution import DeploymentExecutor, PipelineContext
+from app.services.monitoring_light import compute_light_monitoring_status
 from app.services.project_state_engine import (
     compute_project_runtime_state,
     get_last_successful_deployment,
     run_project_healthcheck,
 )
+from app.services.suggestions import generate_deployment_suggestions, generate_project_suggestions
 from app.tasks.deployment import STEP_NAMES, run_deployment_task
 
 logger = logging.getLogger(__name__)
@@ -543,6 +546,50 @@ def _suggest_fix_issue(error_analysis: dict | None, failed_step_name: str | None
     }
 
 
+def _autofix_action_ui(action: str | None) -> dict:
+    if action == "restart_container":
+        return {
+            "action": "restart_container",
+            "title": "Fix Issue",
+            "label": "Container neu starten",
+            "description": "Flori versucht, den aktiven Web-Container sicher neu zu starten.",
+        }
+    if action == "reload_nginx":
+        return {
+            "action": "reload_nginx",
+            "title": "Fix Issue",
+            "label": "nginx neu laden",
+            "description": "Flori prueft zuerst nginx -t und laedt danach nginx neu.",
+        }
+    if action == "retry_deploy":
+        return {
+            "action": "retry_deploy",
+            "title": "Fix Issue",
+            "label": "Deployment erneut anstossen",
+            "description": "Flori startet ein kontrolliertes Retry-Deployment mit Schutz gegen Endlosschleifen.",
+        }
+    return {
+        "action": "redeploy",
+        "title": "Fix Issue",
+        "label": "Deployment erneut ausfuehren",
+        "description": "Startet ein neues Deployment mit denselben Projekteinstellungen.",
+    }
+
+
+def _autofix_result_message(entry: dict | None) -> str:
+    if not isinstance(entry, dict):
+        return "Flori konnte keine Aktion ausfuehren."
+    action = entry.get("action_name")
+    success = bool(entry.get("success"))
+    if action == "restart_container":
+        return "Flori hat versucht, den Container neu zu starten." if success else "Flori konnte den Container nicht neu starten."
+    if action == "reload_nginx":
+        return "Flori hat nginx neu geladen." if success else "Flori konnte nginx nicht neu laden."
+    if action == "retry_deploy":
+        return "Flori hat das Deployment erneut angestossen." if success else "Flori konnte das Retry-Deployment nicht starten."
+    return "Flori hat keine automatische Aktion ausgefuehrt."
+
+
 def _apply_hetzner_settings_from_form(setting: ProviderSetting) -> None:
     api_token = (request.form.get("api_token") or "").strip()
     default_location = (request.form.get("default_location") or "").strip() or None
@@ -727,7 +774,13 @@ def projects():
             db.session.query(Deployment.project_id, func.count(Deployment.id)).group_by(Deployment.project_id).all()
         )
         projects_data = (
-            Project.query.options(joinedload(Project.repository))
+            Project.query.options(
+                joinedload(Project.repository),
+                joinedload(Project.active_server),
+                joinedload(Project.active_deployment),
+                joinedload(Project.deployments).joinedload(Deployment.steps),
+                joinedload(Project.deployments).joinedload(Deployment.server),
+            )
             .filter_by(company_id=current_user.company_id)
             .order_by(Project.created_at.desc())
             .all()
@@ -741,7 +794,13 @@ def projects():
                 db.session.query(Deployment.project_id, func.count(Deployment.id)).group_by(Deployment.project_id).all()
             )
             projects_data = (
-                Project.query.options(joinedload(Project.repository))
+                Project.query.options(
+                    joinedload(Project.repository),
+                    joinedload(Project.active_server),
+                    joinedload(Project.active_deployment),
+                    joinedload(Project.deployments).joinedload(Deployment.steps),
+                    joinedload(Project.deployments).joinedload(Deployment.server),
+                )
                 .filter_by(company_id=current_user.company_id)
                 .order_by(Project.created_at.desc())
                 .all()
@@ -757,8 +816,10 @@ def projects():
             projects_data = []
 
     runtime_state_by_project: dict[int, dict] = {}
+    monitoring_by_project: dict[int, dict] = {}
     for project in projects_data:
         runtime_state_by_project[project.id] = _refresh_project_runtime_state(project, allow_healthcheck=False)
+        monitoring_by_project[project.id] = compute_light_monitoring_status(project, force_refresh=False, persist=True)
     db.session.commit()
 
     return render_template(
@@ -766,6 +827,7 @@ def projects():
         projects=projects_data,
         deployment_counts=deployment_counts,
         runtime_state_by_project=runtime_state_by_project,
+        monitoring_by_project=monitoring_by_project,
         hetzner_defaults=_get_hetzner_defaults(),
     )
 
@@ -960,6 +1022,8 @@ def project_detail(project_id: int):
         }
 
     runtime_state = _refresh_project_runtime_state(project, allow_healthcheck=True)
+    light_monitoring = compute_light_monitoring_status(project, force_refresh=False, persist=True)
+    project_suggestions = generate_project_suggestions(project, runtime_state=runtime_state)
     next_step_guidance = _build_next_step_guidance(project, runtime_state, deployments, deployment_meta)
     health_history = (
         ProjectHealthCheck.query.filter_by(project_id=project.id)
@@ -989,10 +1053,32 @@ def project_detail(project_id: int):
         effective_location=project.desired_location or hetzner_defaults.get("default_location"),
         effective_image=project.desired_image or hetzner_defaults.get("default_image"),
         runtime_state=runtime_state,
+        light_monitoring=light_monitoring,
+        project_suggestions=project_suggestions,
         next_step_guidance=next_step_guidance,
         health_history=health_history,
         last_successful_deployment=get_last_successful_deployment(project),
     )
+
+
+@bp.post("/projects/<int:project_id>/monitoring-light-refresh")
+def refresh_project_monitoring_light(project_id: int):
+    project = Project.query.options(
+        joinedload(Project.active_deployment),
+        joinedload(Project.active_server),
+        joinedload(Project.deployments).joinedload(Deployment.steps),
+        joinedload(Project.deployments).joinedload(Deployment.server),
+    ).filter_by(id=project_id).first()
+    if not project:
+        abort(404)
+
+    try:
+        result = compute_light_monitoring_status(project, force_refresh=True, persist=True)
+    except Exception as exc:
+        logger.exception("Monitoring Light refresh failed for project id=%s", project_id)
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify({"project_id": project.id, "monitoring": result})
 
 
 @bp.post("/projects/<int:project_id>/runtime-healthcheck")
@@ -1546,17 +1632,25 @@ def deployment_detail(deployment_id: int):
     steps = sorted(deployment.steps, key=lambda s: (s.order_index, s.id))
     latest_failed_step = _latest_failed_step(deployment)
     deployment_error_analysis = _extract_deployment_error_analysis(deployment, latest_failed_step)
-    fix_suggestion = _suggest_fix_issue(deployment_error_analysis, latest_failed_step.name if latest_failed_step else None)
     step_status = {step.name: step.status for step in steps}
     target_server = _resolve_target_server(deployment.project, deployment)
     project_runtime_state = _refresh_project_runtime_state(deployment.project, allow_healthcheck=False)
+    deployment_suggestions = generate_deployment_suggestions(deployment, runtime_state=project_runtime_state)
+    autofix_decision = suggest_autofix_action(deployment, runtime_state=project_runtime_state)
+    fix_suggestion = _autofix_action_ui(autofix_decision.get("recommended_fix_action"))
+    if not autofix_decision.get("recommended_fix_action"):
+        fix_suggestion = _suggest_fix_issue(deployment_error_analysis, latest_failed_step.name if latest_failed_step else None)
+    autofix_history = deployment.autofix_history_json if isinstance(deployment.autofix_history_json, list) else []
     db.session.commit()
     return render_template(
         "dashboard/deployment_detail.html",
         deployment=deployment,
         steps=steps,
         deployment_error_analysis=deployment_error_analysis,
+        deployment_suggestions=deployment_suggestions,
         fix_suggestion=fix_suggestion,
+        autofix_decision=autofix_decision,
+        autofix_history=autofix_history,
         project_runtime_state=project_runtime_state,
         target_server=target_server,
         provision_server_ok=step_status.get("provision_server") == "success",
@@ -1586,7 +1680,9 @@ def fix_deployment_issue(deployment_id: int):
 
     failed_step = _latest_failed_step(deployment)
     error_analysis = _extract_deployment_error_analysis(deployment, failed_step)
-    suggestion = _suggest_fix_issue(error_analysis, failed_step.name if failed_step else None)
+    runtime_state = _refresh_project_runtime_state(deployment.project, allow_healthcheck=False)
+    autofix_decision = suggest_autofix_action(deployment, runtime_state=runtime_state)
+    suggestion = _autofix_action_ui(autofix_decision.get("recommended_fix_action"))
     requested_action = (request.form.get("action") or "").strip()
     action = requested_action or suggestion["action"]
 
@@ -1599,43 +1695,28 @@ def fix_deployment_issue(deployment_id: int):
 
     executor = DeploymentExecutor()
 
-    if action == "restart_container":
-        deploy_dir = f"/opt/orbital/{project.slug}"
-        result = executor.ssh.run_one(target_server.ipv4, f"docker compose -f {deploy_dir}/docker-compose.yml restart web")
-        if result.return_code == 0:
-            flash("Fix Issue ausgefuehrt: Web-Container wurde neu gestartet.", "success")
-        else:
-            flash(
-                "Fix Issue fehlgeschlagen: Container konnte nicht neu gestartet werden. "
-                f"stderr: {(result.stderr or '').strip() or '-'}",
-                "error",
-            )
-        return redirect(url_for("dashboard.deployment_detail", deployment_id=deployment.id))
-
-    if action == "reload_nginx":
-        results = executor.ssh.run_many(target_server.ipv4, ["nginx -t", "systemctl reload nginx"])
-        failed = [item for item in results if item.return_code != 0]
-        if not failed:
-            flash("Fix Issue ausgefuehrt: Nginx-Konfiguration geprueft und neu geladen.", "success")
-        else:
-            details = "; ".join((item.stderr or "").strip() or item.command for item in failed)
-            flash(f"Fix Issue fehlgeschlagen: Nginx konnte nicht neu geladen werden. {details}", "error")
-        return redirect(url_for("dashboard.deployment_detail", deployment_id=deployment.id))
-
-    preferred_server = target_server
-    new_deployment, created_ok = _create_and_queue_deployment(
-        project,
-        selected_server=preferred_server,
-        mode="production",
-        commit_sha=None,
-        trigger_source="dashboard-fix-issue",
+    manual_decision = {
+        "detected_error_type": (error_analysis or {}).get("error_type") or "unknown_error",
+        "recommended_fix_action": action,
+        "confidence": (error_analysis or {}).get("confidence") or 0.5,
+        "safe_to_execute_automatically": False,
+        "trigger_reason": "manual_fix_issue",
+    }
+    entry = execute_autofix(
+        deployment,
+        decision=manual_decision,
+        project_slug=project.slug,
+        target_host=target_server.ipv4 if target_server else None,
+        executor=executor,
+        auto_trigger=False,
+        step_names=STEP_NAMES,
+        queue_retry=lambda new_deployment_id: run_deployment_task.delay(new_deployment_id),
     )
-    if not created_ok or new_deployment is None:
-        flash("Fix Issue konnte nicht ausgefuehrt werden: Redeploy konnte nicht gestartet werden.", "error")
-        return redirect(url_for("dashboard.deployment_detail", deployment_id=deployment.id))
+    flash(_autofix_result_message(entry), "success" if entry.get("success") else "error")
 
-    flash("Fix Issue ausgefuehrt: Redeploy wurde gestartet.", "success")
-    return redirect(url_for("dashboard.deployment_detail", deployment_id=new_deployment.id))
+    if action == "retry_deploy" and entry.get("success") and entry.get("new_deployment_id"):
+        return redirect(url_for("dashboard.deployment_detail", deployment_id=entry["new_deployment_id"]))
+    return redirect(url_for("dashboard.deployment_detail", deployment_id=deployment.id))
 
 
 @bp.get("/projects/<int:project_id>/ssl-info")
@@ -1759,6 +1840,11 @@ def deployment_status(deployment_id: int):
             "id": deployment.id,
             "status": deployment.status,
             "error_message": deployment.error_message,
+            "autofix_status": deployment.autofix_status,
+            "autofix_attempt_count": deployment.autofix_attempt_count,
+            "last_autofix_action": deployment.last_autofix_action,
+            "last_autofix_at": deployment.last_autofix_at.isoformat() if deployment.last_autofix_at else None,
+            "autofix_history_json": deployment.autofix_history_json,
             "updated_at": deployment.updated_at.isoformat(),
         },
         "progress": {

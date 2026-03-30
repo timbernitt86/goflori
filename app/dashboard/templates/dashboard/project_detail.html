@@ -104,6 +104,43 @@
 <p><a href="{{ url_for('dashboard.projects') }}">Zurueck zur Projektliste</a></p>
 
 <div class="project-shell">
+    <div class="card">
+        <h3 class="section-title">Flori Chat</h3>
+        <p class="section-subtitle">Kurze, verstaendliche Hinweise auf Basis von Deployments, Runtime und Konfiguration.</p>
+        <div class="flori-chat-shell">
+            {% if project_suggestions %}
+                {% for suggestion in project_suggestions %}
+                    <div class="flori-chat-row">
+                        <div class="flori-avatar">F</div>
+                        <div class="flori-chat-bubble">
+                            <strong>{{ suggestion.title }}</strong>
+                            <div style="margin-top: 4px;">{{ suggestion.message }}</div>
+                            <div class="flori-chat-meta">
+                                <span class="flori-chip">{{ suggestion.severity }}</span>
+                                <span class="flori-chip">{{ suggestion.suggestion_type }}</span>
+                                <span class="flori-chip">{{ suggestion.source }}</span>
+                                {% if suggestion.confidence is not none %}
+                                    <span class="flori-chip">Confidence {{ suggestion.confidence }}</span>
+                                {% endif %}
+                            </div>
+                            {% if suggestion.suggested_action %}
+                                <div class="muted" style="margin-top: 6px;"><strong>Empfehlung:</strong> {{ suggestion.suggested_action }}</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                {% endfor %}
+            {% else %}
+                <div class="flori-chat-row">
+                    <div class="flori-avatar">F</div>
+                    <div class="flori-chat-bubble">
+                        <strong>Alles ruhig</strong>
+                        <div style="margin-top: 4px;">Ich habe aktuell keine dringenden Hinweise fuer dich.</div>
+                    </div>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+
     <div class="card hero">
         <div class="project-head">
             <div class="project-head-top">
@@ -262,6 +299,34 @@
 
             <details>
                 <summary>Erweiterte Repository-Optionen</summary>
+
+        <div class="card">
+            <h3 class="section-title">Monitoring Light</h3>
+            <p class="section-subtitle">Pragmatischer Live-Blick auf Erreichbarkeit, Container und letzten relevanten Fehler.</p>
+
+            {% set monitoring_class = 'status-success' if light_monitoring.monitoring_status == 'healthy' else ('status-degraded' if light_monitoring.monitoring_status == 'warning' else ('status-failed' if light_monitoring.monitoring_status == 'critical' else 'status-unknown')) %}
+            <table class="dense-table">
+                <tbody>
+                    <tr><th>Monitoring-Status</th><td><span class="badge {{ monitoring_class }}" id="monitoring_status_badge">{{ light_monitoring.monitoring_status or '-' }}</span></td></tr>
+                    <tr><th>App erreichbar</th><td id="monitoring_app_reachable">{{ 'Ja' if light_monitoring.app_reachable else 'Nein' }}</td></tr>
+                    <tr><th>Container laeuft</th><td id="monitoring_container_running">{{ 'Ja' if light_monitoring.container_running else 'Nein' }}</td></tr>
+                    <tr><th>Letzter Fehler</th><td id="monitoring_last_error">{{ light_monitoring.last_error_summary or '-' }}</td></tr>
+                    <tr><th>Letzte Pruefung</th><td id="monitoring_checked_at">{{ light_monitoring.checked_at or '-' }}</td></tr>
+                    <tr><th>URL</th><td id="monitoring_target_url">{{ light_monitoring.app_check.target_url if light_monitoring.app_check else '-' }}</td></tr>
+                </tbody>
+            </table>
+
+            <div class="actions" style="margin-top: 10px;">
+                <button type="button" id="refresh_monitoring_btn" class="secondary">Monitoring aktualisieren</button>
+            </div>
+            <p class="muted" id="monitoring_meta" style="margin-top: 6px;">
+                {% if light_monitoring.container_check and light_monitoring.container_check.error_message %}
+                    {{ light_monitoring.container_check.error_message }}
+                {% else %}
+                    Letzte Monitoring-Pruefung ist geladen.
+                {% endif %}
+            </p>
+        </div>
 
                 <label for="repo_access_token">Access Token (nur fuer private Repos)</label>
                 <input id="repo_access_token" name="access_token" placeholder="Neu setzen; leer lassen = unveraendert" autocomplete="off">
@@ -874,6 +939,53 @@ APP_ENV=production</pre>
     }
 
     const baseUrl = "{{ url_for('dashboard.project_runtime_logs', project_id=project.id) }}";
+    const monitoringBtn = document.getElementById("refresh_monitoring_btn");
+    const monitoringStatusBadge = document.getElementById("monitoring_status_badge");
+    const monitoringAppReachable = document.getElementById("monitoring_app_reachable");
+    const monitoringContainerRunning = document.getElementById("monitoring_container_running");
+    const monitoringLastError = document.getElementById("monitoring_last_error");
+    const monitoringCheckedAt = document.getElementById("monitoring_checked_at");
+    const monitoringTargetUrl = document.getElementById("monitoring_target_url");
+    const monitoringMeta = document.getElementById("monitoring_meta");
+    const monitoringRefreshUrl = "{{ url_for('dashboard.refresh_project_monitoring_light', project_id=project.id) }}";
+
+    if (monitoringBtn && monitoringStatusBadge && monitoringMeta) {
+        const monitoringClassFor = (status) => {
+            if (status === "healthy") return "badge status-success";
+            if (status === "warning") return "badge status-degraded";
+            if (status === "critical") return "badge status-failed";
+            return "badge status-unknown";
+        };
+
+        monitoringBtn.addEventListener("click", async () => {
+            monitoringBtn.disabled = true;
+            monitoringBtn.textContent = "Laedt...";
+            monitoringMeta.textContent = "Monitoring wird aktualisiert...";
+            try {
+                const response = await fetch(monitoringRefreshUrl, { method: "POST" });
+                const data = await response.json();
+                if (!response.ok) {
+                    monitoringMeta.textContent = data.error || "Monitoring konnte nicht aktualisiert werden.";
+                    return;
+                }
+
+                const monitoring = data.monitoring || {};
+                monitoringStatusBadge.textContent = monitoring.monitoring_status || "-";
+                monitoringStatusBadge.className = monitoringClassFor(monitoring.monitoring_status);
+                if (monitoringAppReachable) monitoringAppReachable.textContent = monitoring.app_reachable ? "Ja" : "Nein";
+                if (monitoringContainerRunning) monitoringContainerRunning.textContent = monitoring.container_running ? "Ja" : "Nein";
+                if (monitoringLastError) monitoringLastError.textContent = monitoring.last_error_summary || "-";
+                if (monitoringCheckedAt) monitoringCheckedAt.textContent = monitoring.checked_at || "-";
+                if (monitoringTargetUrl) monitoringTargetUrl.textContent = (monitoring.app_check && monitoring.app_check.target_url) || "-";
+                monitoringMeta.textContent = (monitoring.container_check && monitoring.container_check.error_message) || "Monitoring erfolgreich aktualisiert.";
+            } catch (err) {
+                monitoringMeta.textContent = String(err);
+            } finally {
+                monitoringBtn.disabled = false;
+                monitoringBtn.textContent = "Monitoring aktualisieren";
+            }
+        });
+    }
 
     const healthBtn = document.getElementById("runtime_healthcheck_btn");
     const healthMeta = document.getElementById("runtime_healthcheck_meta");

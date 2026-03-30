@@ -19,6 +19,11 @@ class Deployment(TimestampMixin, db.Model):
     output = db.Column(db.Text, nullable=True)
     error_message = db.Column(db.Text, nullable=True)
     error_analysis_json = db.Column(db.JSON, nullable=True)
+    autofix_status = db.Column(db.String(50), nullable=False, default="idle")
+    autofix_attempt_count = db.Column(db.Integer, nullable=False, default=0)
+    last_autofix_action = db.Column(db.String(100), nullable=True)
+    last_autofix_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    autofix_history_json = db.Column(db.JSON, nullable=True)
 
     project = db.relationship("Project", back_populates="deployments", foreign_keys=[project_id])
     server = db.relationship("Server", foreign_keys=[server_id])
@@ -40,6 +45,11 @@ class Deployment(TimestampMixin, db.Model):
             "output": self.output,
             "error_message": self.error_message,
             "error_analysis_json": self.error_analysis_json,
+            "autofix_status": self.autofix_status,
+            "autofix_attempt_count": self.autofix_attempt_count,
+            "last_autofix_action": self.last_autofix_action,
+            "last_autofix_at": self.last_autofix_at.isoformat() if self.last_autofix_at else None,
+            "autofix_history_json": self.autofix_history_json,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }

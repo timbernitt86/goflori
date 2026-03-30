@@ -45,6 +45,43 @@
     </div>
 </div>
 
+<div class="card">
+    <h3>Flori Chat</h3>
+    <p class="muted">Ich uebersetze technische Befunde in kurze, verstaendliche Hinweise.</p>
+    <div class="flori-chat-shell">
+        {% if deployment_suggestions %}
+            {% for suggestion in deployment_suggestions %}
+                <div class="flori-chat-row">
+                    <div class="flori-avatar">F</div>
+                    <div class="flori-chat-bubble">
+                        <strong>{{ suggestion.title }}</strong>
+                        <div style="margin-top: 4px;">{{ suggestion.message }}</div>
+                        <div class="flori-chat-meta">
+                            <span class="flori-chip">{{ suggestion.severity }}</span>
+                            <span class="flori-chip">{{ suggestion.suggestion_type }}</span>
+                            <span class="flori-chip">{{ suggestion.source }}</span>
+                            {% if suggestion.confidence is not none %}
+                                <span class="flori-chip">Confidence {{ suggestion.confidence }}</span>
+                            {% endif %}
+                        </div>
+                        {% if suggestion.suggested_action %}
+                            <div class="muted" style="margin-top: 6px;"><strong>Empfehlung:</strong> {{ suggestion.suggested_action }}</div>
+                        {% endif %}
+                    </div>
+                </div>
+            {% endfor %}
+        {% else %}
+            <div class="flori-chat-row">
+                <div class="flori-avatar">F</div>
+                <div class="flori-chat-bubble">
+                    <strong>Ich beobachte weiter</strong>
+                    <div style="margin-top: 4px;">Sobald ich einen klaren Hinweis sehe, melde ich mich hier.</div>
+                </div>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
 {% if project_runtime_state %}
 <div class="card">
     <h3>Projekt Runtime-State</h3>
@@ -125,6 +162,69 @@
     <p class="muted" style="margin-top: 8px;">Die Analyse basiert auf den aktuellen Step-Logs (stdout/stderr).</p>
 </div>
 {% endif %}
+
+<div class="card">
+    <h3>Flori Auto-Fix</h3>
+    {% if autofix_decision %}
+        <table>
+            <tbody>
+                <tr><th>detected_error_type</th><td>{{ autofix_decision.detected_error_type or '-' }}</td></tr>
+                <tr><th>recommended_fix_action</th><td>{{ autofix_decision.recommended_fix_action or '-' }}</td></tr>
+                <tr><th>confidence</th><td>{{ autofix_decision.confidence if autofix_decision.confidence is not none else '-' }}</td></tr>
+                <tr><th>safe_to_execute_automatically</th><td>{{ 'true' if autofix_decision.safe_to_execute_automatically else 'false' }}</td></tr>
+                <tr><th>trigger_reason</th><td>{{ autofix_decision.trigger_reason or '-' }}</td></tr>
+            </tbody>
+        </table>
+    {% endif %}
+
+    <p class="muted" style="margin-top: 10px;">
+        {% if deployment.last_autofix_action == 'restart_container' %}
+            Flori hat versucht, den Container neu zu starten.
+        {% elif deployment.last_autofix_action == 'reload_nginx' %}
+            Flori hat nginx neu geladen.
+        {% elif deployment.last_autofix_action == 'retry_deploy' %}
+            Flori hat das Deployment erneut angestossen.
+        {% else %}
+            Flori hat noch keine Auto-Fix-Aktion fuer dieses Deployment ausgefuehrt.
+        {% endif %}
+    </p>
+
+    {% if autofix_history %}
+        <p><strong>Auto-Fix-Historie</strong></p>
+        <table>
+            <thead>
+                <tr>
+                    <th>action_name</th>
+                    <th>triggered_at</th>
+                    <th>trigger_reason</th>
+                    <th>execution_result</th>
+                    <th>success</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in autofix_history|reverse %}
+                    <tr>
+                        <td>{{ item.action_name or '-' }}</td>
+                        <td>{{ item.triggered_at or '-' }}</td>
+                        <td>{{ item.trigger_reason or '-' }}</td>
+                        <td>{{ item.execution_result or '-' }}</td>
+                        <td>{{ 'ja' if item.success else 'nein' }}</td>
+                    </tr>
+                    {% if item.stdout or item.stderr %}
+                        <tr>
+                            <td colspan="5">
+                                {% if item.stdout %}<strong>stdout:</strong><pre>{{ item.stdout }}</pre>{% endif %}
+                                {% if item.stderr %}<strong>stderr:</strong><pre>{{ item.stderr }}</pre>{% endif %}
+                            </td>
+                        </tr>
+                    {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p class="muted">Noch keine Auto-Fix-Versuche vorhanden.</p>
+    {% endif %}
+</div>
 
 <div class="card {% if is_live %}status-running{% endif %}">
     <h3>Live-Log</h3>

@@ -7,6 +7,7 @@ from typing import Any
 
 from app.extensions import db
 from app.models import ActivityLog, Deployment, DeploymentStep, Project, Server
+from app.services.auto_fix import execute_autofix, suggest_autofix_action
 from app.services.error_analysis import analyze_deployment_errors, analyze_deployment_failure
 from app.services.project_state_engine import (
     compute_project_runtime_state,
@@ -641,6 +642,45 @@ def _fail_running_steps(deployment: Deployment, exc: Exception) -> None:
         )
 
 
+def _run_autofix(
+    deployment: Deployment,
+    project: Project,
+    *,
+    runtime_state: dict[str, Any] | None,
+    trigger_reason: str,
+) -> dict[str, Any] | None:
+    decision = suggest_autofix_action(deployment, runtime_state=runtime_state)
+    if not decision.get("recommended_fix_action"):
+        return None
+
+    target_server = _pick_server_for_deployment(project, deployment)
+    target_host = target_server.ipv4 if target_server and target_server.ipv4 else None
+
+    result = execute_autofix(
+        deployment,
+        decision=decision,
+        project_slug=project.slug,
+        target_host=target_host,
+        executor=DeploymentExecutor(),
+        auto_trigger=True,
+        step_names=STEP_NAMES,
+        queue_retry=lambda new_deployment_id: run_deployment_task.delay(new_deployment_id),
+    )
+    db.session.add(
+        ActivityLog(
+            project_id=project.id,
+            action="deployment.autofix",
+            actor="flori",
+            message=(
+                f"Auto-Fix trigger={trigger_reason}; action={result.get('action_name')}; "
+                f"result={result.get('execution_result')}; success={result.get('success')}"
+            ),
+        )
+    )
+    db.session.commit()
+    return result
+
+
 @shared_task(ignore_result=False)
 def run_deployment_task(deployment_id: int):
     deployment = Deployment.query.get_or_404(deployment_id)
@@ -1097,6 +1137,18 @@ def run_deployment_task(deployment_id: int):
 
         # Compute runtime status from active version + latest health information.
         runtime_state = compute_project_runtime_state(project, commit=False)
+
+        if runtime_state.current_runtime_status in {"failed", "degraded"}:
+            _run_autofix(
+                deployment,
+                project,
+                runtime_state={
+                    "current_runtime_status": runtime_state.current_runtime_status,
+                    "reason": runtime_state.reason,
+                },
+                trigger_reason="runtime_state_after_deploy",
+            )
+
         db.session.add(
             ActivityLog(
                 project_id=project.id,
@@ -1120,6 +1172,13 @@ def run_deployment_task(deployment_id: int):
 
         # Error Analysis Engine v2: deployment-wide classification with primary/secondary errors.
         deployment.error_analysis_json = analyze_deployment_errors(deployment)
+
+        _run_autofix(
+            deployment,
+            project,
+            runtime_state={"current_runtime_status": "failed", "reason": str(exc)},
+            trigger_reason="failed_deployment",
+        )
 
         analysis = _latest_error_analysis(deployment)
         if analysis:

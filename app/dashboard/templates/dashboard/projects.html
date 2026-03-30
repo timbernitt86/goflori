@@ -50,6 +50,11 @@
                                 <th>Name</th>
                                 <th>Status</th>
                                 <th>Runtime</th>
+                                <th>Monitoring</th>
+                                <th>App</th>
+                                <th>Container</th>
+                                <th>Letzter Fehler</th>
+                                <th>Geprueft</th>
                                 <th>Aktive Version</th>
                                 <th>Letzter Erfolg</th>
                                 <th>Domain</th>
@@ -60,6 +65,7 @@
                         <tbody>
                             {% for project in projects %}
                                 {% set runtime = runtime_state_by_project.get(project.id, {}) %}
+                                {% set monitoring = monitoring_by_project.get(project.id, {}) %}
                                 <tr>
                                     <td><a href="{{ url_for('dashboard.project_detail', project_id=project.id) }}">{{ project.name }}</a></td>
                                     <td>
@@ -70,6 +76,14 @@
                                         {% set runtime_class = 'status-' ~ runtime.get('current_runtime_status') if runtime.get('current_runtime_status') in ['running', 'failed', 'degraded'] else 'status-unknown' %}
                                         <span class="badge {{ runtime_class }}">{{ runtime.get('current_runtime_status', '-') }}</span>
                                     </td>
+                                    <td>
+                                        {% set monitoring_class = 'status-success' if monitoring.get('monitoring_status') == 'healthy' else ('status-degraded' if monitoring.get('monitoring_status') == 'warning' else ('status-failed' if monitoring.get('monitoring_status') == 'critical' else 'status-unknown')) %}
+                                        <span class="badge {{ monitoring_class }}">{{ monitoring.get('monitoring_status', '-') }}</span>
+                                    </td>
+                                    <td>{{ 'Ja' if monitoring.get('app_reachable') else 'Nein' }}</td>
+                                    <td>{{ 'Ja' if monitoring.get('container_running') else 'Nein' }}</td>
+                                    <td>{{ monitoring.get('last_error_summary') or '-' }}</td>
+                                    <td>{{ monitoring.get('checked_at') or '-' }}</td>
                                     <td>{{ runtime.get('active_version') or '-' }}</td>
                                     <td>
                                         {% if runtime.get('last_successful_deployment_id') %}
