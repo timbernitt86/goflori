@@ -410,8 +410,9 @@
     <p class="eyebrow">App deployen ohne DevOps-Wissen</p>
     <h1>Repository verknüpfen.<br><span class="accent">Flori macht den Rest.</span></h1>
     <p class="hero-sub">
-        goflori provisioniert Server, baut Docker-Container, konfiguriert Nginx und SSL –
-        vollautomatisch. Du pushst Code, wir liefern die Live-URL.
+        goflori provisioniert Server, baut Docker-Container, konfiguriert Nginx und SSL.
+        Neu: Flori sagt dir klar, was fehlt, versucht sichere Auto-Fixes und zeigt mit Monitoring Light,
+        ob deine App wirklich stabil läuft.
     </p>
     <div class="hero-ctas">
         <a class="btn-cta-primary" href="{{ url_for('auth.register') }}">Jetzt kostenlos registrieren</a>
@@ -422,32 +423,32 @@
 <!-- Features -->
 <section class="features-section">
     <p class="section-label">Was goflori macht</p>
-    <h2 class="section-title">Alles automatisiert, nichts vergessen</h2>
+    <h2 class="section-title">Deployment + Flori Assistenz aus einem Guss</h2>
     <div class="features-grid">
         <div class="feature-card">
             <div class="feature-icon fi-blue">🚀</div>
             <h3>One-Click Deploy</h3>
-            <p>Repository-Link einfügen, auf Deploy klicken – goflori erledigt Server-Provisionierung, Docker-Build und Start automatisch.</p>
+            <p>Repository-Link einfügen, auf Deploy klicken - goflori erledigt Provisionierung, Docker-Build, Nginx und SSL automatisch.</p>
         </div>
         <div class="feature-card">
             <div class="feature-icon fi-orange">🔒</div>
-            <h3>SSL inklusive</h3>
-            <p>Certbot-Integration sorgt dafür, dass deine App immer unter HTTPS erreichbar ist – ohne manuelle Konfiguration.</p>
+            <h3>Monitoring Light</h3>
+            <p>Auf einen Blick: App erreichbar, Container laeuft, letzter relevanter Fehler und Zeitpunkt der letzten Pruefung.</p>
         </div>
         <div class="feature-card">
             <div class="feature-icon fi-green">📊</div>
-            <h3>Live-Logs & Status</h3>
-            <p>Jeder Deployment-Step wird protokolliert. Du siehst genau wo etwas klemmt und bekommst Lösungsvorschläge.</p>
+            <h3>Flori Chat Hinweise</h3>
+            <p>Technische Fehler werden in klare Produktsprache uebersetzt: fehlende ENVs, erkannter Port, DB-Probleme und naechste Schritte.</p>
         </div>
         <div class="feature-card">
             <div class="feature-icon fi-purple">🏢</div>
             <h3>Team-fähig</h3>
-            <p>Mehrere Team-Mitglieder pro Firma. Alle Projekte, Server und Konfigurationen in einem Workspace.</p>
+            <p>Mehrere Team-Mitglieder pro Firma. Alle Projekte, Server, Monitoring-Infos und Fix-Historien in einem Workspace.</p>
         </div>
         <div class="feature-card">
             <div class="feature-icon fi-pink">🔁</div>
-            <h3>Redeploy in Sekunden</h3>
-            <p>Änderungen gebaut? Ein Klick auf Redeploy – derselbe Server, dasselbe Setup, neue Version.</p>
+            <h3>Auto-Fix Engine</h3>
+            <p>Bei sicheren Problemen handelt Flori automatisch: Container neu starten, nginx neu laden oder kontrolliert redeployen.</p>
         </div>
     </div>
 </section>
@@ -455,7 +456,7 @@
 <!-- Steps -->
 <section class="steps-section">
     <p class="section-label">So funktioniert es</p>
-    <h2 class="section-title">In 4 Schritten live</h2>
+    <h2 class="section-title">In 4 Schritten live - und stabil</h2>
     <div class="steps-list">
         <div class="step">
             <div class="step-number">1</div>
@@ -475,7 +476,7 @@
         <div class="step">
             <div class="step-number">4</div>
             <h4>Deployen</h4>
-            <p>Auf Deploy klicken. goflori provisioniert, baut und startet.</p>
+            <p>Auf Deploy klicken. Flori ueberwacht, gibt Hinweise und startet sichere Fixes bei Bedarf.</p>
         </div>
     </div>
 </section>
@@ -483,8 +484,8 @@
 <!-- CTA Banner -->
 <section class="cta-section">
     <div class="cta-banner">
-        <h2>Bereit? Erstes Projekt in unter 5 Minuten live.</h2>
-        <p>Keine Kreditkarte. Kein Infrastructure-Know-how erforderlich.</p>
+        <h2>Bereit? Erstes Projekt in unter 5 Minuten live - mit Flori als Copilot.</h2>
+        <p>Keine Kreditkarte. Kein Infrastructure-Know-how. Monitoring, Hinweise und Auto-Fix direkt inklusive.</p>
         <a class="btn-cta-white" href="{{ url_for('auth.register') }}">Jetzt kostenlos starten →</a>
     </div>
 </section>
