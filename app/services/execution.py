@@ -24,6 +24,13 @@ class PipelineContext:
     app_port: int = 8000
     host_port: int = 8000
     is_update: bool = False  # True when redeploying to an existing live server
+    rolling_update_enabled: bool = False
+    redeploy_strategy: str = "full"
+    release_id: str | None = None
+    deploy_root: str | None = None
+    release_dir: str | None = None
+    previous_release_dir: str | None = None
+    minimal_downtime_attempted: bool = False
 
 
 @dataclass
@@ -90,11 +97,20 @@ class DeploymentExecutor:
         }
         return content, meta
 
-    def upload_artifacts(self, host: str, ctx: PipelineContext, rendered: RenderedDeploymentFiles):
-        deploy_dir = f"/opt/orbital/{ctx.slug}"
+    def upload_artifacts(
+        self,
+        host: str,
+        ctx: PipelineContext,
+        rendered: RenderedDeploymentFiles,
+        *,
+        target_dir: str | None = None,
+        reset_target: bool = False,
+    ):
+        deploy_dir = target_dir or f"/opt/orbital/{ctx.slug}"
         repo_snapshot_dir = f"{deploy_dir}/repo"
         results: list[CommandResult] = []
-        results.append(self.ssh.run_one(host, f"rm -rf {deploy_dir}"))
+        if reset_target:
+            results.append(self.ssh.run_one(host, f"rm -rf {deploy_dir}"))
         results.append(self.ssh.run_one(host, f"mkdir -p {deploy_dir}"))
         results.append(self.ssh.run_one(host, f"mkdir -p {repo_snapshot_dir}"))
 
@@ -200,7 +216,7 @@ class DeploymentExecutor:
         ]
         return self.ssh.run_many(host, commands)
 
-    def update_containers(self, host: str, ctx: PipelineContext):
+    def update_containers(self, host: str, ctx: PipelineContext, *, deploy_dir: str | None = None):
         """Update deploy: rebuild image and restart with zero DB wipe.
 
         Named volumes (app data / SQLite DB) are preserved because we never
@@ -208,22 +224,22 @@ class DeploymentExecutor:
         by 'docker-compose up --build --force-recreate', and DB migrations are
         applied afterwards.
         """
-        deploy_dir = f"/opt/orbital/{ctx.slug}"
+        deploy_dir = deploy_dir or f"/opt/orbital/{ctx.slug}"
         commands = [
-            # Force-remove any leftover containers by name pattern (handles v1->v2 naming conflicts).
-            f"docker ps -a --filter 'name={ctx.slug}' -q | xargs -r docker rm -f",
-            # Rebuild image from updated repo snapshot and replace the container.
-            # Named volumes are NOT affected - the DB survives.
-            f"docker compose -f {deploy_dir}/docker-compose.yml up -d --build --force-recreate",
+            # Build first to preserve old running container if build fails.
+            f"docker compose -f {deploy_dir}/docker-compose.yml build web",
+            # Replace only web service to reduce downtime compared to full stack recreation.
+            f"docker compose -f {deploy_dir}/docker-compose.yml up -d --build --no-deps web",
             # Apply any new DB migrations (add columns / create tables).
             self._db_migrate_command(deploy_dir),
         ]
         return self.ssh.run_many(host, commands)
 
-    def configure_reverse_proxy(self, host: str, ctx: PipelineContext):
+    def configure_reverse_proxy(self, host: str, ctx: PipelineContext, *, deploy_dir: str | None = None):
+        root = deploy_dir or f"/opt/orbital/{ctx.slug}"
         commands = [
-            f"test -f /opt/orbital/{ctx.slug}/nginx.conf",
-            f"ln -sf /opt/orbital/{ctx.slug}/nginx.conf /etc/nginx/sites-enabled/{ctx.slug}.conf",
+            f"test -f {root}/nginx.conf",
+            f"ln -sf {root}/nginx.conf /etc/nginx/sites-enabled/{ctx.slug}.conf",
             "rm -f /etc/nginx/sites-enabled/default",
             "nginx -t",
             "systemctl reload nginx",
@@ -286,7 +302,7 @@ class DeploymentExecutor:
         ]
         return self.ssh.run_many(host, commands)
 
-    def verify_deployment(self, host: str, ctx: PipelineContext) -> list:
+    def verify_deployment(self, host: str, ctx: PipelineContext, *, deploy_dir: str | None = None) -> list:
         """Self-healing post-deploy verification.
 
         Check order (auto-fix attempted at each stage):
@@ -298,7 +314,7 @@ class DeploymentExecutor:
         The final CommandResult entry has return_code 0 on full success or 1 on
         permanent failure so that _assert_command_results_ok fails the step.
         """
-        deploy_dir = f"/opt/orbital/{ctx.slug}"
+        deploy_dir = deploy_dir or f"/opt/orbital/{ctx.slug}"
         container_name = f"{ctx.slug}-web"
         results: list = []
 
@@ -346,7 +362,7 @@ class DeploymentExecutor:
         results.append(symlink)
         if symlink.return_code != 0:
             # Auto-fix: re-apply reverse proxy config
-            results.extend(self.configure_reverse_proxy(host, ctx))
+            results.extend(self.configure_reverse_proxy(host, ctx, deploy_dir=deploy_dir))
 
         # ── 3. nginx darf NICHT die Default-Seite ausliefern ──────────────────
         # Probe via port 80 (through nginx). "Welcome to nginx" = default site still active.
@@ -354,7 +370,7 @@ class DeploymentExecutor:
         results.append(probe)
         if "Welcome to nginx" in (probe.stdout or ""):
             # Auto-fix: re-apply proxy config and reload nginx
-            results.extend(self.configure_reverse_proxy(host, ctx))
+            results.extend(self.configure_reverse_proxy(host, ctx, deploy_dir=deploy_dir))
             reprobe = self.ssh.run_one(host, "curl -s http://127.0.0.1:80 --max-time 15")
             results.append(reprobe)
             if "Welcome to nginx" in (reprobe.stdout or ""):

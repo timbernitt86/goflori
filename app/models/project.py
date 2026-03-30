@@ -26,6 +26,7 @@ class Project(TimestampMixin, db.Model):
     active_version = db.Column(db.String(255), nullable=True)
     active_source_reference = db.Column(db.String(1000), nullable=True)
     last_healthcheck_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    rolling_update_enabled = db.Column(db.Boolean, nullable=False, default=False)
     light_monitoring_status = db.Column(db.String(50), nullable=False, default="unknown")
     light_monitoring_json = db.Column(db.JSON, nullable=True)
 
@@ -83,6 +84,7 @@ class Project(TimestampMixin, db.Model):
             "active_version": self.active_version,
             "active_source_reference": self.active_source_reference,
             "last_healthcheck_at": self.last_healthcheck_at.isoformat() if self.last_healthcheck_at else None,
+            "rolling_update_enabled": self.rolling_update_enabled,
             "light_monitoring_status": self.light_monitoring_status,
             "light_monitoring_json": self.light_monitoring_json,
             "created_at": self.created_at.isoformat(),

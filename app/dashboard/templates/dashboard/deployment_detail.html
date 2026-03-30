@@ -283,6 +283,9 @@
             </tr>
             <tr><th>Mode</th><td>{{ deployment.mode }}</td></tr>
             <tr><th>Trigger</th><td>{{ deployment.trigger_source }}</td></tr>
+            <tr><th>Redeploy-Strategie</th><td>{{ deployment.redeploy_strategy or '-' }}</td></tr>
+            <tr><th>Minimal-Downtime versucht</th><td>{{ 'ja' if deployment.minimal_downtime_attempted else 'nein' }}</td></tr>
+            <tr><th>Rolling-Update Snapshot</th><td>{{ 'aktiv' if deployment.rolling_update_enabled_snapshot else 'inaktiv' }}</td></tr>
             <tr><th>Commit SHA</th><td>{{ deployment.commit_sha or '-' }}</td></tr>
             <tr>
                 <th>Zielmaschine</th>

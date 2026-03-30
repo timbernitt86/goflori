@@ -19,6 +19,9 @@ class Deployment(TimestampMixin, db.Model):
     output = db.Column(db.Text, nullable=True)
     error_message = db.Column(db.Text, nullable=True)
     error_analysis_json = db.Column(db.JSON, nullable=True)
+    redeploy_strategy = db.Column(db.String(50), nullable=True)
+    minimal_downtime_attempted = db.Column(db.Boolean, nullable=False, default=False)
+    rolling_update_enabled_snapshot = db.Column(db.Boolean, nullable=False, default=False)
     autofix_status = db.Column(db.String(50), nullable=False, default="idle")
     autofix_attempt_count = db.Column(db.Integer, nullable=False, default=0)
     last_autofix_action = db.Column(db.String(100), nullable=True)
@@ -45,6 +48,9 @@ class Deployment(TimestampMixin, db.Model):
             "output": self.output,
             "error_message": self.error_message,
             "error_analysis_json": self.error_analysis_json,
+            "redeploy_strategy": self.redeploy_strategy,
+            "minimal_downtime_attempted": self.minimal_downtime_attempted,
+            "rolling_update_enabled_snapshot": self.rolling_update_enabled_snapshot,
             "autofix_status": self.autofix_status,
             "autofix_attempt_count": self.autofix_attempt_count,
             "last_autofix_action": self.last_autofix_action,

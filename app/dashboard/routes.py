@@ -1112,6 +1112,7 @@ def save_project_infrastructure(project_id: int):
     project.desired_server_type = (request.form.get("desired_server_type") or "").strip() or None
     project.desired_location = (request.form.get("desired_location") or "").strip() or None
     project.desired_image = (request.form.get("desired_image") or "").strip() or None
+    project.rolling_update_enabled = (request.form.get("rolling_update_enabled") or "").strip() in {"1", "true", "on", "yes"}
 
     try:
         db.session.commit()

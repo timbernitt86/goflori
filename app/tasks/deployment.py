@@ -18,6 +18,7 @@ from app.services.repo_analyzer import RepoAnalyzer
 from app.services.repo_clone import LocalRepoCloneService
 from app.services.hetzner import HetznerAPIError
 from app.services.execution import DeploymentExecutor, PipelineContext
+from app.services.redeploy import RedeployService
 from app.services.ssh import CommandNotAllowedError, SSHWaitTimeoutError
 
 
@@ -160,6 +161,11 @@ def _utcnow() -> datetime:
 
 def _event_timestamp() -> str:
     return _utcnow().isoformat()
+
+
+def _build_release_id(deployment: Deployment) -> str:
+    stamp = _utcnow().strftime("%Y%m%d%H%M%S")
+    return f"d{deployment.id}-{stamp}"
 
 
 def _default_step_details() -> dict[str, Any]:
@@ -726,7 +732,13 @@ def run_deployment_task(deployment_id: int):
         host_port=_host_port_for_project(project.id),
         # is_update is set to True after we determine a live server already exists.
         is_update=False,
+        rolling_update_enabled=bool(project.rolling_update_enabled),
     )
+    server: Server | None = None
+    deployment.redeploy_strategy = "full"
+    deployment.minimal_downtime_attempted = False
+    deployment.rolling_update_enabled_snapshot = bool(project.rolling_update_enabled)
+    db.session.commit()
 
     try:
         _start_step(deployment, "provision_server")
@@ -980,10 +992,41 @@ def run_deployment_task(deployment_id: int):
             logger.exception("deployment=%s step=render_artifacts_from_repo failed", deployment.id)
             raise
 
+        redeploy_service: RedeployService | None = None
+        active_deploy_dir = f"/opt/orbital/{ctx.slug}"
+
+        if ctx.is_update:
+            ctx.release_id = _build_release_id(deployment)
+            redeploy_service = RedeployService(executor=executor, host=server.ipv4 or "127.0.0.1", ctx=ctx)
+            redeploy_plan = redeploy_service.prepare_redeploy()
+            active_deploy_dir = redeploy_plan.get("release_dir") or active_deploy_dir
+            deployment.redeploy_strategy = redeploy_plan.get("strategy")
+            deployment.minimal_downtime_attempted = bool(redeploy_plan.get("minimal_downtime_attempted"))
+            deployment.rolling_update_enabled_snapshot = bool(project.rolling_update_enabled)
+            db.session.commit()
+            log_step_event(
+                deployment,
+                "upload_artifacts",
+                level="info",
+                message="Redeploy-Strategie vorbereitet",
+                source="redeploy.prepare",
+                context={
+                    "strategy": deployment.redeploy_strategy,
+                    "release_dir": active_deploy_dir,
+                    "rolling_update_enabled": deployment.rolling_update_enabled_snapshot,
+                },
+            )
+
         _run_command_step(
             deployment,
             "upload_artifacts",
-            lambda: executor.upload_artifacts(server.ipv4 or "127.0.0.1", ctx, rendered),
+            lambda: executor.upload_artifacts(
+                server.ipv4 or "127.0.0.1",
+                ctx,
+                rendered,
+                target_dir=active_deploy_dir,
+                reset_target=bool(ctx.is_update),
+            ),
         )
 
         if ctx.is_update:
@@ -992,7 +1035,7 @@ def run_deployment_task(deployment_id: int):
             _run_command_step(
                 deployment,
                 "start_containers",
-                lambda: executor.update_containers(server.ipv4 or "127.0.0.1", ctx),
+                lambda: executor.update_containers(server.ipv4 or "127.0.0.1", ctx, deploy_dir=active_deploy_dir),
             )
         else:
             _run_command_step(
@@ -1007,7 +1050,7 @@ def run_deployment_task(deployment_id: int):
         _run_command_step(
             deployment,
             "configure_reverse_proxy",
-            lambda: executor.configure_reverse_proxy(server.ipv4 or "127.0.0.1", ctx),
+            lambda: executor.configure_reverse_proxy(server.ipv4 or "127.0.0.1", ctx, deploy_dir=active_deploy_dir),
         )
 
         # DNS check and SSL must run on every deploy (initial AND update).
@@ -1115,7 +1158,25 @@ def run_deployment_task(deployment_id: int):
             _run_command_step(deployment, "run_certbot", lambda: executor.run_certbot(server.ipv4 or "127.0.0.1", ctx.domain), raises=False)
             _run_command_step(deployment, "verify_https", lambda: executor.verify_https(server.ipv4 or "127.0.0.1", ctx.domain), raises=False)
 
-        _run_command_step(deployment, "healthcheck", lambda: executor.verify_deployment(server.ipv4 or "127.0.0.1", ctx))
+        _run_command_step(
+            deployment,
+            "healthcheck",
+            lambda: executor.verify_deployment(server.ipv4 or "127.0.0.1", ctx, deploy_dir=active_deploy_dir),
+        )
+
+        if ctx.is_update and redeploy_service:
+            redeploy_service.activate_new_release()
+            log_step_event(
+                deployment,
+                "healthcheck",
+                level="info",
+                message="Neues Release nach erfolgreichem Healthcheck aktiviert",
+                source="redeploy.activate",
+                context={
+                    "strategy": deployment.redeploy_strategy,
+                    "release_dir": active_deploy_dir,
+                },
+            )
 
         clone_step = next((step for step in deployment.steps if step.name == "clone_repository"), None)
         clone_meta = clone_step.json_details if clone_step and isinstance(clone_step.json_details, dict) else {}
@@ -1126,7 +1187,7 @@ def run_deployment_task(deployment_id: int):
         if not deployment.commit_sha:
             deployment.commit_sha = clone_meta.get("commit_hash")
         deployment.source_snapshot_path = clone_meta.get("local_path") or ctx.local_repository_path
-        deployment.artifact_snapshot_path = f"/opt/orbital/{ctx.slug}"
+        deployment.artifact_snapshot_path = active_deploy_dir
         project.status = "live"
         deployment.output = rendered.compose
         # Mark this deployment as active version and persist runtime-derived fields.
@@ -1166,6 +1227,12 @@ def run_deployment_task(deployment_id: int):
 
         return deployment.to_dict(include_steps=True)
     except Exception as exc:
+        if ctx.is_update and ctx.release_dir and server and server.ipv4:
+            try:
+                rollback_service = RedeployService(executor=executor, host=server.ipv4, ctx=ctx)
+                rollback_service.rollback_to_previous_release()
+            except Exception:
+                logger.warning("deployment=%s rollback stub failed", deployment.id)
         _fail_running_steps(deployment, exc)
         deployment.status = "failed"
         deployment.successful = False

@@ -164,6 +164,7 @@
                 <li class="overview-item"><strong>Aktiver Server</strong>{{ latest_server.name if latest_server else 'wird automatisch gewaehlt' }}</li>
                 <li class="overview-item"><strong>Branch</strong>{{ project.repository.branch if project.repository and project.repository.branch else project.branch }}</li>
                 <li class="overview-item"><strong>Framework</strong>{{ project.framework or 'automatisch' }}</li>
+                <li class="overview-item"><strong>Redeploy-Strategie</strong>{{ 'rolling vorbereitet' if project.rolling_update_enabled else 'fast (standard)' }}</li>
                 <li class="overview-item"><strong>Laufzeitstatus</strong><span class="badge {{ runtime_status_class }}">{{ runtime_state.current_runtime_status if runtime_state else '-' }}</span></li>
             </ul>
         </div>
@@ -647,6 +648,11 @@ APP_ENV=production</pre>
 
                     <label for="desired_image_cfg">Image</label>
                     <input id="desired_image_cfg" name="desired_image" value="{{ project.desired_image or '' }}" placeholder="Standard: {{ hetzner_defaults.default_image }}">
+
+                    <label for="rolling_update_enabled_cfg">
+                        <input id="rolling_update_enabled_cfg" name="rolling_update_enabled" type="checkbox" value="1" {% if project.rolling_update_enabled %}checked{% endif %}>
+                        Rolling-Update vorbereiten (Redeploy-Strategie)
+                    </label>
 
                     <div class="actions">
                         <button type="submit">Infrastruktur speichern</button>
